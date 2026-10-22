@@ -251,6 +251,56 @@ def generate_all(
     print(f"\n[SUCCESS] Generated {len(all_records)} total certificates ({len(participants)} Participants + {len(volunteers)} Volunteers)!")
 
 
+def append_to_records_sheet(sheet_type: str, name: str, email: str, project_root: Path):
+    """Appends newly issued recipient to the Excel/CSV database."""
+    cleaned_name = clean_name(name)
+    cleaned_email = clean_email(email)
+    if not cleaned_name:
+        return
+
+    try:
+        import openpyxl
+    except ImportError:
+        openpyxl = None
+
+    if sheet_type == "volunteer":
+        # 1. volunteers.xlsx
+        v_xlsx = project_root / "volunteers.xlsx"
+        if v_xlsx.exists() and openpyxl:
+            try:
+                wb = openpyxl.load_workbook(v_xlsx)
+                ws = wb.active
+                ws.append([cleaned_name, cleaned_email])
+                wb.save(v_xlsx)
+                wb.close()
+                print(f"[DATABASE] Appended {cleaned_name} ({cleaned_email}) to volunteers.xlsx")
+            except Exception as e:
+                print(f"Warning: Could not update volunteers.xlsx: {e}")
+
+        # 2. volunteers.csv
+        v_csv = project_root / "volunteers.csv"
+        if v_csv.exists():
+            try:
+                with open(v_csv, "a", encoding="utf-8") as f:
+                    f.write(f"\n{cleaned_name},{cleaned_email}")
+                print(f"[DATABASE] Appended {cleaned_name} ({cleaned_email}) to volunteers.csv")
+            except Exception as e:
+                print(f"Warning: Could not update volunteers.csv: {e}")
+    else:
+        # participants.xlsx
+        p_xlsx = project_root / "Attendance Sheet Participants .xlsx"
+        if p_xlsx.exists() and openpyxl:
+            try:
+                wb = openpyxl.load_workbook(p_xlsx)
+                ws = wb.active
+                ws.append([cleaned_name, cleaned_email])
+                wb.save(p_xlsx)
+                wb.close()
+                print(f"[DATABASE] Appended {cleaned_name} ({cleaned_email}) to Attendance Sheet Participants .xlsx")
+            except Exception as e:
+                print(f"Warning: Could not update Attendance Sheet Participants .xlsx: {e}")
+
+
 def main():
     project_root = Path(__file__).resolve().parent
 
@@ -262,6 +312,7 @@ def main():
     parser.add_argument("--output-dir", default="public/certificates")
     parser.add_argument("--single", action="store_true", help="Generate a single certificate")
     parser.add_argument("--name", type=str, help="Recipient name for single generation")
+    parser.add_argument("--email", type=str, default="", help="Recipient email for single generation")
     parser.add_argument("--id", type=str, help="Recipient ID for single generation")
     parser.add_argument("--type", choices=["participant", "volunteer"], default="participant", help="Certificate type")
 
@@ -294,6 +345,11 @@ def main():
             font_path=font_path
         )
         print(f"[SUCCESS] Single certificate generated: {out_file}")
+
+        # Also append to the Excel / CSV source database
+        if args.email:
+            append_to_records_sheet(args.type, args.name, args.email, project_root)
+
         sys.exit(0)
 
     # Bulk mode

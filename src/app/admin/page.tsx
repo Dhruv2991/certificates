@@ -22,6 +22,9 @@ import {
   Award,
   Filter,
   Send,
+  ChevronLeft,
+  ChevronRight,
+  ArrowUpDown,
 } from "lucide-react";
 
 interface CertificateRecord {
@@ -35,6 +38,7 @@ interface CertificateRecord {
   emailSent?: boolean;
   emailSentAt?: string;
   emailCount?: number;
+  isNewlyIssued?: boolean;
 }
 
 interface Stats {
@@ -58,13 +62,16 @@ export default function AdminPage() {
   const [loadingCerts, setLoadingCerts] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "participant" | "volunteer">("all");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest" | "name" | "id">("newest");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number | "all">(50);
 
   // Add form state
   const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newType, setNewType] = useState<"participant" | "volunteer">("participant");
   const [addLoading, setAddLoading] = useState(false);
-  const [addMessage, setAddMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [addMessage, setAddMessage] = useState<{ type: "success" | "error"; text: string; certId?: string; fileUrl?: string } | null>(null);
 
   // Deleting & Resending state
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -79,7 +86,7 @@ export default function AdminPage() {
   useEffect(() => {
     async function checkAuth() {
       try {
-        const res = await fetch("/api/admin/auth");
+        const res = await fetch(`/api/admin/auth?t=${Date.now()}`, { cache: "no-store" });
         if (res.ok) {
           const data = await res.json();
           if (data.authenticated) {
@@ -99,7 +106,9 @@ export default function AdminPage() {
   const fetchCertificates = async () => {
     setLoadingCerts(true);
     try {
-      const res = await fetch("/api/admin/certificates");
+      const res = await fetch(`/api/admin/certificates?sort=newest&t=${Date.now()}`, {
+        cache: "no-store",
+      });
       if (res.ok) {
         const data = await res.json();
         setCertificates(data.certificates || []);
@@ -181,13 +190,34 @@ export default function AdminPage() {
 
       const data = await res.json();
 
-      if (res.ok && data.success) {
+      if (res.ok && data.success && data.certificate) {
+        const newRecord: CertificateRecord = {
+          ...data.certificate,
+          isNewlyIssued: true,
+        };
+
+        // Immediately prepend to local state so user sees it right at the top
+        setCertificates((prev) => [newRecord, ...prev.filter((c) => c.id !== newRecord.id)]);
+        setStats((prev) => ({
+          total: prev.total + 1,
+          participantsCount: prev.participantsCount + (newRecord.type === "participant" ? 1 : 0),
+          volunteersCount: prev.volunteersCount + (newRecord.type === "volunteer" ? 1 : 0),
+        }));
+
         setAddMessage({
           type: "success",
-          text: `Issued certificate ${data.certificate.id} for ${data.certificate.name}!`,
+          text: `Issued certificate ${newRecord.id} for ${newRecord.name}! Saved to database & ready.`,
+          certId: newRecord.id,
+          fileUrl: newRecord.fileUrl || newRecord.certificateUrl,
         });
+
         setNewName("");
         setNewEmail("");
+        setCurrentPage(1); // Jump to page 1 where the newly added cert is
+        setTypeFilter("all"); // Ensure not hidden by a different tab
+        setSearchQuery(""); // Clear search to make it visible immediately
+
+        // Background refetch to ensure database synchronization
         fetchCertificates();
       } else {
         setAddMessage({
@@ -214,6 +244,7 @@ export default function AdminPage() {
       });
 
       if (res.ok) {
+        setCertificates((prev) => prev.filter((c) => c.id !== id));
         fetchCertificates();
       } else {
         alert("Failed to delete certificate.");
@@ -275,20 +306,47 @@ export default function AdminPage() {
     }
   };
 
-  // Filtered list
-  const filteredCertificates = certificates.filter((c) => {
-    const matchesSearch =
-      c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.id.toLowerCase().includes(searchQuery.toLowerCase());
+  // Filtered and sorted list
+  const filteredCertificates = certificates
+    .filter((c) => {
+      const matchesSearch =
+        c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.id.toLowerCase().includes(searchQuery.toLowerCase());
 
-    if (!matchesSearch) return false;
+      if (!matchesSearch) return false;
 
-    const certType = c.type || (c.id.startsWith("VOL") ? "volunteer" : "participant");
-    if (typeFilter !== "all" && certType !== typeFilter) return false;
+      const certType = c.type || (c.id.startsWith("VOL") ? "volunteer" : "participant");
+      if (typeFilter !== "all" && certType !== typeFilter) return false;
 
-    return true;
-  });
+      return true;
+    })
+    .sort((a, b) => {
+      // Always keep newly issued certificates in this session right at the top
+      if (a.isNewlyIssued && !b.isNewlyIssued) return -1;
+      if (!a.isNewlyIssued && b.isNewlyIssued) return 1;
+
+      if (sortOrder === "name") {
+        return a.name.localeCompare(b.name);
+      }
+      if (sortOrder === "id") {
+        return a.id.localeCompare(b.id, undefined, { numeric: true });
+      }
+      if (sortOrder === "oldest") {
+        return a.id.localeCompare(b.id, undefined, { numeric: true });
+      }
+      // default "newest"
+      return b.id.localeCompare(a.id, undefined, { numeric: true });
+    });
+
+  // Pagination calculation
+  const totalItems = filteredCertificates.length;
+  const itemsPerPage = pageSize === "all" ? Math.max(totalItems, 1) : pageSize;
+  const totalPages = Math.ceil(totalItems / itemsPerPage) || 1;
+  const validCurrentPage = Math.min(Math.max(currentPage, 1), totalPages);
+  const startIndex = (validCurrentPage - 1) * itemsPerPage;
+  const endIndex = pageSize === "all" ? totalItems : Math.min(startIndex + itemsPerPage, totalItems);
+  const displayedCertificates = filteredCertificates.slice(startIndex, endIndex);
 
   // Loading screen during session check
   if (isAuthenticated === null) {
@@ -452,7 +510,7 @@ export default function AdminPage() {
               <Award className="w-4 h-4 text-zinc-500" />
             </div>
             <p className="text-2xl font-semibold text-zinc-100">{stats.total}</p>
-            <span className="text-[11px] text-zinc-500">Live in certificates.json</span>
+            <span className="text-[11px] text-zinc-500">Live in Supabase PostgreSQL</span>
           </div>
 
           <div className="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
@@ -490,18 +548,39 @@ export default function AdminPage() {
 
           {addMessage && (
             <div
-              className={`p-3 rounded-lg text-xs flex items-center gap-2 ${
+              className={`p-3.5 rounded-lg text-xs flex items-center justify-between gap-3 ${
                 addMessage.type === "success"
-                  ? "bg-emerald-950/40 border border-emerald-800/80 text-emerald-300"
-                  : "bg-red-950/40 border border-red-800/80 text-red-300"
+                  ? "bg-emerald-950/50 border border-emerald-700/80 text-emerald-200"
+                  : "bg-red-950/50 border border-red-700/80 text-red-200"
               }`}
             >
-              {addMessage.type === "success" ? (
-                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-              ) : (
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-              )}
-              <span>{addMessage.text}</span>
+              <div className="flex items-center gap-2">
+                {addMessage.type === "success" ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                )}
+                <span>{addMessage.text}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {addMessage.fileUrl && (
+                  <a
+                    href={addMessage.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-900/80 hover:bg-emerald-800 text-emerald-100 border border-emerald-600/80 font-medium transition-colors"
+                  >
+                    <span>View PNG</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
+                <button
+                  onClick={() => setAddMessage(null)}
+                  className="text-zinc-400 hover:text-zinc-200 text-xs px-1"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
           )}
 
@@ -550,7 +629,7 @@ export default function AdminPage() {
               {addLoading ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Generating...</span>
+                  <span>Generating & Saving...</span>
                 </>
               ) : (
                 <>
@@ -585,7 +664,7 @@ export default function AdminPage() {
             <div>
               <h2 className="text-sm font-semibold text-zinc-100">Issued Certificates Directory</h2>
               <p className="text-xs text-zinc-400">
-                Displaying {filteredCertificates.length} of {certificates.length} records.
+                Displaying {totalItems > 0 ? `${startIndex + 1}–${endIndex}` : 0} of {totalItems} filtered records ({certificates.length} total in database).
               </p>
             </div>
 
@@ -594,7 +673,7 @@ export default function AdminPage() {
               <div className="inline-flex rounded-lg bg-zinc-950 p-1 border border-zinc-800 text-xs">
                 <button
                   type="button"
-                  onClick={() => setTypeFilter("all")}
+                  onClick={() => { setTypeFilter("all"); setCurrentPage(1); }}
                   className={`px-2.5 py-1 rounded text-xs transition-colors ${
                     typeFilter === "all" ? "bg-zinc-800 text-zinc-100 font-medium" : "text-zinc-400 hover:text-zinc-200"
                   }`}
@@ -603,7 +682,7 @@ export default function AdminPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setTypeFilter("participant")}
+                  onClick={() => { setTypeFilter("participant"); setCurrentPage(1); }}
                   className={`px-2.5 py-1 rounded text-xs transition-colors ${
                     typeFilter === "participant"
                       ? "bg-zinc-800 text-zinc-100 font-medium"
@@ -614,7 +693,7 @@ export default function AdminPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setTypeFilter("volunteer")}
+                  onClick={() => { setTypeFilter("volunteer"); setCurrentPage(1); }}
                   className={`px-2.5 py-1 rounded text-xs transition-colors ${
                     typeFilter === "volunteer"
                       ? "bg-zinc-800 text-zinc-100 font-medium"
@@ -625,14 +704,48 @@ export default function AdminPage() {
                 </button>
               </div>
 
+              {/* Sort Order Selector */}
+              <div className="relative">
+                <select
+                  value={sortOrder}
+                  onChange={(e) => setSortOrder(e.target.value as any)}
+                  className="px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 focus:outline-none focus:border-zinc-500"
+                  title="Sort Order"
+                >
+                  <option value="newest">Sort: Newest First</option>
+                  <option value="oldest">Sort: Oldest First</option>
+                  <option value="name">Sort: Name (A-Z)</option>
+                  <option value="id">Sort: ID (Asc)</option>
+                </select>
+              </div>
+
+              {/* Page Size Selector */}
+              <div className="relative">
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setPageSize(val === "all" ? "all" : parseInt(val, 10));
+                    setCurrentPage(1);
+                  }}
+                  className="px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 focus:outline-none focus:border-zinc-500"
+                  title="Rows per page"
+                >
+                  <option value={25}>25 / page</option>
+                  <option value={50}>50 / page</option>
+                  <option value={100}>100 / page</option>
+                  <option value="all">Show All</option>
+                </select>
+              </div>
+
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-2.5" />
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); }}
                   placeholder="Filter name, email, ID..."
-                  className="pl-8 pr-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-500 w-48 sm:w-56"
+                  className="pl-8 pr-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-500 w-44 sm:w-52"
                 />
               </div>
 
@@ -661,18 +774,34 @@ export default function AdminPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/80">
-                {filteredCertificates.length === 0 ? (
+                {displayedCertificates.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-zinc-500 text-xs">
+                    <td colSpan={7} className="py-8 text-center text-zinc-500 text-xs">
                       No matching certificate records found.
                     </td>
                   </tr>
                 ) : (
-                  filteredCertificates.slice(0, 100).map((c) => {
+                  displayedCertificates.map((c) => {
                     const isVol = c.type === "volunteer" || c.id.startsWith("VOL");
                     return (
-                      <tr key={c.id} className="hover:bg-zinc-950/60 transition-colors">
-                        <td className="py-2 px-3 font-mono text-zinc-200">{c.id}</td>
+                      <tr
+                        key={c.id}
+                        className={`transition-colors ${
+                          c.isNewlyIssued
+                            ? "bg-emerald-950/30 hover:bg-emerald-950/50"
+                            : "hover:bg-zinc-950/60"
+                        }`}
+                      >
+                        <td className="py-2 px-3 font-mono text-zinc-200">
+                          <div className="flex items-center gap-1.5">
+                            <span>{c.id}</span>
+                            {c.isNewlyIssued && (
+                              <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[9px] font-mono font-bold animate-pulse">
+                                NEW
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="py-2 px-3 font-medium text-zinc-100">{c.name}</td>
                         <td className="py-2 px-3 text-zinc-400">{c.email}</td>
                         <td className="py-2 px-3">
@@ -742,10 +871,44 @@ export default function AdminPage() {
             </table>
           </div>
 
-          {filteredCertificates.length > 100 && (
-            <p className="text-[11px] text-zinc-500 text-center pt-2">
-              Showing first 100 of {filteredCertificates.length} items. Use the search bar above to narrow down.
-            </p>
+          {/* Pagination Controls */}
+          {pageSize !== "all" && totalPages > 1 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-zinc-800/60 text-xs text-zinc-400">
+              <div>
+                Showing <span className="font-semibold text-zinc-200">{startIndex + 1}</span> to{" "}
+                <span className="font-semibold text-zinc-200">{endIndex}</span> of{" "}
+                <span className="font-semibold text-zinc-200">{totalItems}</span> certificates
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
+                  disabled={validCurrentPage <= 1}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 disabled:opacity-40 disabled:hover:bg-zinc-950 transition-colors"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Previous</span>
+                </button>
+
+                <div className="flex items-center gap-1 font-mono text-xs px-2 text-zinc-300">
+                  <span>Page</span>
+                  <span className="font-semibold text-zinc-100">{validCurrentPage}</span>
+                  <span>of</span>
+                  <span className="font-semibold text-zinc-100">{totalPages}</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
+                  disabled={validCurrentPage >= totalPages}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 disabled:opacity-40 disabled:hover:bg-zinc-950 transition-colors"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </main>

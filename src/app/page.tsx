@@ -81,7 +81,8 @@ export default function CertificatePortal() {
 
     try {
       const response = await fetch(
-        `/api/certificates?q=${encodeURIComponent(term)}`
+        `/api/certificates?q=${encodeURIComponent(term)}&t=${Date.now()}`,
+        { cache: "no-store" }
       );
       const data = await response.json();
 

@@ -1,66 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
 import { sendCertificateViaBrevo } from "@/lib/brevo";
 import {
   hasEmailBeenSent,
   getCertificateEmailStatus,
   recordEmailSent,
 } from "@/lib/email-tracker";
+import {
+  getCertificateByIdOrEmail,
+  getAllCertificates,
+  recordEmailSentInDB,
+} from "@/lib/certificates-service";
 
-export interface CertificateRecord {
-  id: string;
-  name: string;
-  email: string;
-  type?: "participant" | "volunteer";
-  fileUrl: string;
-  certificateUrl?: string;
-  filename?: string;
-  event?: string;
-  issueDate?: string;
-  organization?: string;
-  college?: string;
-  partner?: string;
-  partnerUrl?: string;
-  emailSent?: boolean;
-  emailSentAt?: string;
-  emailCount?: number;
-}
-
-function loadCertificates(): CertificateRecord[] {
-  const candidatePaths = [
-    path.join(process.cwd(), "public", "certificates.json"),
-    path.join(process.cwd(), "certificates.json"),
-    path.join(process.cwd(), "src", "data", "certificates.json"),
-    path.join(process.cwd(), "data", "certificates.json"),
-  ];
-
-  for (const filePath of candidatePaths) {
-    if (fs.existsSync(/* turbopackIgnore: true */ filePath)) {
-      try {
-        const fileContent = fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf-8");
-        const parsed = JSON.parse(fileContent);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      } catch (err) {
-        console.error(`Error parsing certificates from ${filePath}:`, err);
-      }
-    }
-  }
-
-  return [];
-}
+const NO_CACHE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  Pragma: "no-cache",
+  Expires: "0",
+};
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const q = searchParams.get("q") || searchParams.get("query") || "";
   const listAll = searchParams.get("all") === "true";
 
-  const certificates = loadCertificates();
-
-  // Return demo preview list if requested
+  // Return preview list if requested
   if (listAll) {
+    const { certificates, stats } = await getAllCertificates();
     const participants = certificates
       .filter((c) => c.type === "participant" || c.id.startsWith("PAR") || c.id.startsWith("CLI"))
       .slice(0, 3);
@@ -74,14 +38,17 @@ export async function GET(request: NextRequest) {
       type: c.type || (c.id.startsWith("VOL") ? "volunteer" : "participant"),
     }));
 
-    return NextResponse.json({
-      success: true,
-      total: certificates.length,
-      demoItems,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        total: stats.total,
+        demoItems,
+      },
+      { headers: NO_CACHE_HEADERS }
+    );
   }
 
-  const query = q.trim().toLowerCase();
+  const query = q.trim();
 
   if (!query) {
     return NextResponse.json(
@@ -89,35 +56,20 @@ export async function GET(request: NextRequest) {
         success: false,
         message: "Please enter your registered Email Address or Unique ID to search.",
       },
-      { status: 400 }
+      { status: 400, headers: NO_CACHE_HEADERS }
     );
   }
 
-  // Exact case-insensitive match on email or id
-  let match = certificates.find(
-    (c) =>
-      c.id.toLowerCase() === query ||
-      c.email.toLowerCase() === query
-  );
-
-  // Alphanumeric fallback if hyphens or spaces were omitted in ID
-  if (!match) {
-    const cleanQuery = query.replace(/[^a-z0-9]/g, "");
-    if (cleanQuery.length >= 3) {
-      match = certificates.find((c) => {
-        const cleanId = c.id.toLowerCase().replace(/[^a-z0-9]/g, "");
-        return cleanId === cleanQuery;
-      });
-    }
-  }
+  // Lookup from Supabase PostgreSQL (with fallback to local)
+  const match = await getCertificateByIdOrEmail(query);
 
   if (!match) {
     return NextResponse.json(
       {
         success: false,
-        message: `No certificate record found for "${q.trim()}". Please verify your credentials or check your orientation confirmation email.`,
+        message: `No certificate record found for "${query}". Please verify your credentials or check your orientation confirmation email.`,
       },
-      { status: 404 }
+      { status: 404, headers: NO_CACHE_HEADERS }
     );
   }
 
@@ -125,7 +77,7 @@ export async function GET(request: NextRequest) {
     match.type || (match.id.startsWith("VOL") ? "volunteer" : "participant");
 
   // Check if email has already been sent to this user. User can trigger only ONCE!
-  const alreadySent = hasEmailBeenSent(match.id, match.email);
+  const alreadySent = Boolean(match.emailSent) || hasEmailBeenSent(match.id, match.email);
   let emailDeliveryResult: any = { sent: false, skipped: true };
 
   if (alreadySent) {
@@ -133,7 +85,7 @@ export async function GET(request: NextRequest) {
     emailDeliveryResult = {
       sent: false,
       alreadySent: true,
-      sentAt: status.sentAt || match.emailSentAt,
+      sentAt: match.emailSentAt || status.sentAt,
       message: "Certificate was previously emailed to your address. Contact the club administrator if you require a resend.",
     };
   } else {
@@ -149,6 +101,7 @@ export async function GET(request: NextRequest) {
 
       if (emailDeliveryResult.sent) {
         recordEmailSent(match.id, match.email, "user", emailDeliveryResult.messageId);
+        await recordEmailSentInDB(match.id, match.email, "user");
       }
     } catch (emailErr: any) {
       console.error("Brevo email send error in lookup:", emailErr);
@@ -156,22 +109,25 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({
-    success: true,
-    certificate: match,
-    id: match.id,
-    name: match.name,
-    email: match.email,
-    type: certType,
-    fileUrl: match.fileUrl || match.certificateUrl || `/certificates/${match.id}.png`,
-    emailDelivery: emailDeliveryResult,
-  });
+  return NextResponse.json(
+    {
+      success: true,
+      certificate: match,
+      id: match.id,
+      name: match.name,
+      email: match.email,
+      type: certType,
+      fileUrl: match.fileUrl || match.certificateUrl || `/certificates/${match.id}.png`,
+      emailDelivery: emailDeliveryResult,
+    },
+    { headers: NO_CACHE_HEADERS }
+  );
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const q = String(body?.q || body?.query || body?.id || body?.email || "").trim().toLowerCase();
+    const q = String(body?.q || body?.query || body?.id || body?.email || "").trim();
 
     if (!q) {
       return NextResponse.json(
@@ -179,16 +135,11 @@ export async function POST(request: NextRequest) {
           success: false,
           message: "Search query 'q' is required.",
         },
-        { status: 400 }
+        { status: 400, headers: NO_CACHE_HEADERS }
       );
     }
 
-    const certificates = loadCertificates();
-    const match = certificates.find(
-      (c) =>
-        c.id.toLowerCase() === q ||
-        c.email.toLowerCase() === q
-    );
+    const match = await getCertificateByIdOrEmail(q);
 
     if (!match) {
       return NextResponse.json(
@@ -196,7 +147,7 @@ export async function POST(request: NextRequest) {
           success: false,
           message: `No certificate record found for "${q}".`,
         },
-        { status: 404 }
+        { status: 404, headers: NO_CACHE_HEADERS }
       );
     }
 
@@ -204,7 +155,7 @@ export async function POST(request: NextRequest) {
       match.type || (match.id.startsWith("VOL") ? "volunteer" : "participant");
 
     // Check if email has already been sent
-    const alreadySent = hasEmailBeenSent(match.id, match.email);
+    const alreadySent = Boolean(match.emailSent) || hasEmailBeenSent(match.id, match.email);
     let emailDeliveryResult: any = { sent: false, skipped: true };
 
     if (alreadySent) {
@@ -212,7 +163,7 @@ export async function POST(request: NextRequest) {
       emailDeliveryResult = {
         sent: false,
         alreadySent: true,
-        sentAt: status.sentAt || match.emailSentAt,
+        sentAt: match.emailSentAt || status.sentAt,
         message: "Certificate was previously emailed to your address. Contact the administrator if you require a resend.",
       };
     } else {
@@ -228,29 +179,33 @@ export async function POST(request: NextRequest) {
 
         if (emailDeliveryResult.sent) {
           recordEmailSent(match.id, match.email, "user", emailDeliveryResult.messageId);
+          await recordEmailSentInDB(match.id, match.email, "user");
         }
       } catch (emailErr: any) {
         console.error("Brevo email send error in POST lookup:", emailErr);
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      certificate: match,
-      id: match.id,
-      name: match.name,
-      email: match.email,
-      type: certType,
-      fileUrl: match.fileUrl || match.certificateUrl || `/certificates/${match.id}.png`,
-      emailDelivery: emailDeliveryResult,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        certificate: match,
+        id: match.id,
+        name: match.name,
+        email: match.email,
+        type: certType,
+        fileUrl: match.fileUrl || match.certificateUrl || `/certificates/${match.id}.png`,
+        emailDelivery: emailDeliveryResult,
+      },
+      { headers: NO_CACHE_HEADERS }
+    );
   } catch {
     return NextResponse.json(
       {
         success: false,
         message: "Invalid request body.",
       },
-      { status: 400 }
+      { status: 400, headers: NO_CACHE_HEADERS }
     );
   }
 }

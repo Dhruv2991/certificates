@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "seed:supabase": "node scripts/seed-supabase.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
     "@types/canvas-confetti": "^1.9.0",
     "canvas-confetti": "^1.9.4",
     "lucide-react": "^1.61.0",

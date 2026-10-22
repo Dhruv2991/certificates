@@ -39,6 +39,8 @@ function loadCertificates(): any[] {
   return [];
 }
 
+import { getCertificateByIdOrEmail } from "@/lib/certificates-service";
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id")?.trim() || "";
@@ -51,12 +53,16 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const certificates = loadCertificates();
-  const match = certificates.find(
-    (c) =>
-      (id && c.id.toLowerCase() === id.toLowerCase()) ||
-      (filenameParam && (c.filename === filenameParam || c.id === filenameParam.replace(/\.png$/i, "")))
-  );
+  const lookupTerm = id || filenameParam.replace(/\.png$/i, "");
+  let match = await getCertificateByIdOrEmail(lookupTerm);
+  if (!match) {
+    const certificates = loadCertificates();
+    match = certificates.find(
+      (c) =>
+        (id && c.id.toLowerCase() === id.toLowerCase()) ||
+        (filenameParam && (c.filename === filenameParam || c.id === filenameParam.replace(/\.png$/i, "")))
+    ) || null;
+  }
 
   const certFileName = match?.filename || filenameParam || `${id}.png`;
   const filePath = findCertificateFile(certFileName);

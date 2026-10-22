@@ -127,6 +127,8 @@ export function getCertificateEmailStatus(certId: string, email?: string): {
   return { sent: false, count: 0 };
 }
 
+import { getCertificateByIdOrEmail, recordEmailSentInDB } from "./certificates-service";
+
 /**
  * Records that an email was successfully sent.
  * Updates both the dispatch map and all certificates.json files.
@@ -139,6 +141,11 @@ export function recordEmailSent(
 ) {
   const idKey = certId.trim().toUpperCase();
   const now = new Date().toISOString();
+
+  // Async update in Supabase
+  recordEmailSentInDB(certId, email, triggeredBy).catch((e) => {
+    console.error("Error recording email in DB:", e);
+  });
 
   const map = readDispatchMap();
   const existing = map[idKey] || {
@@ -194,20 +201,22 @@ export async function adminResendCertificateEmail(
   customEmail?: string,
   appUrl?: string
 ): Promise<{ success: boolean; message: string; messageId?: string; sentAt?: string }> {
-  let certRecord: any = null;
+  let certRecord: any = await getCertificateByIdOrEmail(certId);
 
-  for (const fp of JSON_PATHS) {
-    if (fs.existsSync(/* turbopackIgnore: true */ fp)) {
-      try {
-        const list = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ fp, "utf-8"));
-        if (Array.isArray(list)) {
-          const match = list.find((c: any) => c.id?.toUpperCase() === certId.trim().toUpperCase());
-          if (match) {
-            certRecord = match;
-            break;
+  if (!certRecord) {
+    for (const fp of JSON_PATHS) {
+      if (fs.existsSync(/* turbopackIgnore: true */ fp)) {
+        try {
+          const list = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ fp, "utf-8"));
+          if (Array.isArray(list)) {
+            const match = list.find((c: any) => c.id?.toUpperCase() === certId.trim().toUpperCase());
+            if (match) {
+              certRecord = match;
+              break;
+            }
           }
-        }
-      } catch {}
+        } catch {}
+      }
     }
   }
 
