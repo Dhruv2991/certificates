@@ -133,24 +133,34 @@ def render_certificate_image(
 ):
     """
     Cleans placeholder from template and writes clean name.
+    Dynamically scales coordinates relative to a 2000x1414 base canvas.
     """
     img = Image.open(template_path).convert("RGB")
+    w, h = img.size
+    sx = w / 2000.0
+    sy = h / 1414.0
     draw = ImageDraw.Draw(img)
 
     # 1. Clear [RECIPIENT NAME] bounding box
-    draw.rectangle([(250, 725), (1700, 865)], fill=(255, 255, 255))
+    draw.rectangle(
+        [(int(240 * sx), int(720 * sy)), (int(1750 * sx), int(870 * sy))],
+        fill=(255, 255, 255)
+    )
 
     # 2. Load font
+    calc_font_size = max(int(font_size * sy), 16)
     try:
         if font_path and os.path.exists(font_path):
-            font = ImageFont.truetype(font_path, font_size)
+            font = ImageFont.truetype(font_path, calc_font_size)
         else:
             font = ImageFont.load_default()
     except Exception:
         font = ImageFont.load_default()
 
     # 3. Draw clean name strictly without brackets
-    draw.text((name_x, name_y), recipient_name, font=font, fill=(17, 24, 39))
+    calc_name_x = int(name_x * sx)
+    calc_name_y = int(name_y * sy)
+    draw.text((calc_name_x, calc_name_y), recipient_name, font=font, fill=(17, 24, 39))
 
     # 4. Save
     output_path.parent.mkdir(parents=True, exist_ok=True)
