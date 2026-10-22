@@ -125,6 +125,7 @@ export async function GET(request: NextRequest) {
       certificateId: match.id,
       certificateType: certType,
       filename: match.filename,
+      appUrl: request.nextUrl.origin,
     });
   } catch (emailErr: any) {
     console.error("Brevo email send error in lookup:", emailErr);
@@ -187,6 +188,7 @@ export async function POST(request: NextRequest) {
         certificateId: match.id,
         certificateType: certType,
         filename: match.filename,
+        appUrl: request.nextUrl.origin,
       });
     } catch (emailErr: any) {
       console.error("Brevo email send error in POST lookup:", emailErr);

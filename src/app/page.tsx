@@ -192,9 +192,6 @@ export default function CertificatePortal() {
                 <span className="font-bold text-base tracking-tight text-white">
                   TeamCodeLocked Certificates
                 </span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-300">
-                  ORIENTATION 2026
-                </span>
               </div>
               <p className="text-xs text-slate-400">
                 Powered by{" "}
