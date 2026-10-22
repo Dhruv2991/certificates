@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import {
   ShieldCheck,
   Lock,
@@ -20,6 +21,7 @@ import {
   Users,
   Award,
   Filter,
+  Send,
 } from "lucide-react";
 
 interface CertificateRecord {
@@ -30,6 +32,9 @@ interface CertificateRecord {
   fileUrl: string;
   certificateUrl?: string;
   filename?: string;
+  emailSent?: boolean;
+  emailSentAt?: string;
+  emailCount?: number;
 }
 
 interface Stats {
@@ -61,8 +66,14 @@ export default function AdminPage() {
   const [addLoading, setAddLoading] = useState(false);
   const [addMessage, setAddMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // Deleting state
+  // Deleting & Resending state
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [resendingId, setResendingId] = useState<string | null>(null);
+  const [resendNotification, setResendNotification] = useState<{
+    id: string;
+    success: boolean;
+    text: string;
+  } | null>(null);
 
   // Verify session on mount
   useEffect(() => {
@@ -214,6 +225,56 @@ export default function AdminPage() {
     }
   };
 
+  const handleAdminResendEmail = async (id: string, email: string, name: string) => {
+    if (!confirm(`Are you sure you want to resend the certificate email to ${name} (${email})?`)) {
+      return;
+    }
+    setResendingId(id);
+    setResendNotification(null);
+    try {
+      const res = await fetch("/api/admin/resend-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, email }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setResendNotification({
+          id,
+          success: true,
+          text: `Email successfully resent to ${name} (${email})!`,
+        });
+        setCertificates((prev) =>
+          prev.map((c) =>
+            c.id === id
+              ? {
+                  ...c,
+                  emailSent: true,
+                  emailSentAt: data.sentAt || new Date().toISOString(),
+                  emailCount: (c.emailCount || 0) + 1,
+                }
+              : c
+          )
+        );
+      } else {
+        setResendNotification({
+          id,
+          success: false,
+          text: data.message || "Failed to resend email.",
+        });
+      }
+    } catch {
+      setResendNotification({
+        id,
+        success: false,
+        text: "Network error while resending email.",
+      });
+    } finally {
+      setResendingId(null);
+      setTimeout(() => setResendNotification(null), 5000);
+    }
+  };
+
   // Filtered list
   const filteredCertificates = certificates.filter((c) => {
     const matchesSearch =
@@ -259,8 +320,8 @@ export default function AdminPage() {
         <main className="flex-1 flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl p-6 sm:p-8 space-y-6">
             <div className="space-y-2 text-center">
-              <div className="w-10 h-10 rounded-lg bg-zinc-800 border border-zinc-700 mx-auto flex items-center justify-center">
-                <Lock className="w-5 h-5 text-zinc-300" />
+              <div className="w-12 h-12 rounded-xl bg-zinc-950 border border-zinc-800 mx-auto p-1.5 flex items-center justify-center">
+                <Image src="/logo-white.png" alt="CodeLocked Logo" width={32} height={32} className="object-contain" />
               </div>
               <h1 className="text-xl font-semibold text-zinc-100">TeamCodeLocked Admin</h1>
               <p className="text-xs text-zinc-400 leading-relaxed">
@@ -347,8 +408,11 @@ export default function AdminPage() {
           <div className="flex items-center gap-3">
             <Link
               href="/"
-              className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors flex items-center gap-1"
+              className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors flex items-center gap-2"
             >
+              <div className="w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-800 p-1 flex items-center justify-center shrink-0">
+                <Image src="/logo-white.png" alt="CodeLocked Logo" width={20} height={20} className="object-contain" />
+              </div>
               <ArrowLeft className="w-3.5 h-3.5" />
               <span>Portal</span>
             </Link>
@@ -500,6 +564,23 @@ export default function AdminPage() {
 
         {/* Certificates Table & Search */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden space-y-4 p-5 sm:p-6">
+          {resendNotification && (
+            <div
+              className={`p-3 rounded-lg flex items-center gap-2 text-xs font-medium border ${
+                resendNotification.success
+                  ? "bg-emerald-950/40 border-emerald-800 text-emerald-300"
+                  : "bg-red-950/40 border-red-800 text-red-300"
+              }`}
+            >
+              {resendNotification.success ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              )}
+              <span>{resendNotification.text}</span>
+            </div>
+          )}
+
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-semibold text-zinc-100">Issued Certificates Directory</h2>
@@ -574,6 +655,7 @@ export default function AdminPage() {
                   <th className="py-2.5 px-3">Recipient Name</th>
                   <th className="py-2.5 px-3">Email Address</th>
                   <th className="py-2.5 px-3">Type</th>
+                  <th className="py-2.5 px-3">Email Status</th>
                   <th className="py-2.5 px-3">Certificate</th>
                   <th className="py-2.5 px-3 text-right">Actions</th>
                 </tr>
@@ -605,6 +687,21 @@ export default function AdminPage() {
                           </span>
                         </td>
                         <td className="py-2 px-3">
+                          {c.emailSent ? (
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-950/80 text-emerald-400 border border-emerald-800/80"
+                              title={c.emailSentAt ? `Dispatched at ${new Date(c.emailSentAt).toLocaleString()}` : "Email sent"}
+                            >
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                              <span>Sent{c.emailCount && c.emailCount > 1 ? ` (${c.emailCount})` : ""}</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-950 text-zinc-500 border border-zinc-800">
+                              Not Sent
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3">
                           <a
                             href={c.fileUrl || c.certificateUrl}
                             target="_blank"
@@ -617,14 +714,25 @@ export default function AdminPage() {
                           </a>
                         </td>
                         <td className="py-2 px-3 text-right">
-                          <button
-                            onClick={() => handleDelete(c.id, c.name)}
-                            disabled={deletingId === c.id}
-                            className="p-1 rounded hover:bg-red-950/60 text-zinc-500 hover:text-red-400 transition-colors disabled:opacity-40"
-                            title={`Delete ${c.id}`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => handleAdminResendEmail(c.id, c.email, c.name)}
+                              disabled={resendingId === c.id}
+                              className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-700 transition-colors inline-flex items-center gap-1 text-[11px] disabled:opacity-50"
+                              title={`Resend certificate email to ${c.email}`}
+                            >
+                              <Mail className={`w-3 h-3 ${resendingId === c.id ? "animate-spin text-fuchsia-400" : ""}`} />
+                              <span>{resendingId === c.id ? "Sending..." : "Resend"}</span>
+                            </button>
+                            <button
+                              onClick={() => handleDelete(c.id, c.name)}
+                              disabled={deletingId === c.id}
+                              className="p-1 rounded hover:bg-red-950/60 text-zinc-500 hover:text-red-400 transition-colors disabled:opacity-40"
+                              title={`Delete ${c.id}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );

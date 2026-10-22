@@ -4,6 +4,7 @@ import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { isValidAdminSession, ADMIN_EMAIL } from "../auth/route";
+import { getCertificateEmailStatus } from "@/lib/email-tracker";
 
 const execAsync = promisify(exec);
 
@@ -20,6 +21,10 @@ export interface CertificateRecord {
   event?: string;
   partner?: string;
   partnerUrl?: string;
+  emailSent?: boolean;
+  emailSentAt?: string;
+  emailCount?: number;
+  lastSentBy?: string;
 }
 
 const JSON_PATHS = [
@@ -90,6 +95,17 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const mappedList = list.map((c) => {
+    const status = getCertificateEmailStatus(c.id, c.email);
+    return {
+      ...c,
+      emailSent: status.sent || Boolean(c.emailSent),
+      emailSentAt: status.sentAt || c.emailSentAt,
+      emailCount: status.count || c.emailCount || 0,
+      lastSentBy: status.lastSentBy || c.lastSentBy,
+    };
+  });
+
   return NextResponse.json({
     success: true,
     stats: {
@@ -97,7 +113,7 @@ export async function GET(request: NextRequest) {
       participantsCount,
       volunteersCount,
     },
-    certificates: list,
+    certificates: mappedList,
   });
 }
 

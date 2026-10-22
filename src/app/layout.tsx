@@ -24,6 +24,10 @@ export const metadata: Metadata = {
     "Orientation Certificate",
     "Competitive Programming",
   ],
+  icons: {
+    icon: "/logo-white.png",
+    apple: "/logo-white.png",
+  },
 };
 
 export default function RootLayout({

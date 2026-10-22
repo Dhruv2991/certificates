@@ -46,7 +46,10 @@ interface Certificate {
   partnerUrl?: string;
   emailDelivery?: {
     sent: boolean;
+    alreadySent?: boolean;
     skipped?: boolean;
+    sentAt?: string;
+    message?: string;
     error?: string;
   };
 }
@@ -58,36 +61,11 @@ export default function CertificatePortal() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
-  const [demoAttendees, setDemoAttendees] = useState<
-    { id: string; name: string; email: string; type?: string }[]
-  >([]);
 
   const resultRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Load sample Participant and Volunteer records for 1-click test chips
-  useEffect(() => {
-    async function loadDemos() {
-      try {
-        const res = await fetch("/api/certificates?all=true");
-        if (res.ok) {
-          const data = await res.json();
-          if (data.demoItems) {
-            setDemoAttendees(data.demoItems);
-            return;
-          }
-        }
-      } catch {
-        // Fallback
-      }
-      setDemoAttendees([
-        { id: "PAR-001", name: "Dev Ballav", email: "devballav.ch26@bmsce.ac.in", type: "participant" },
-        { id: "VOL-005", name: "Dhruv G Nayak", email: "dhruvg.cs24@bmsce.ac.in", type: "volunteer" },
-        { id: "VOL-001", name: "Laasya Deepak", email: "laasyadeepak.cs25@bmsce.ac.in", type: "volunteer" },
-      ]);
-    }
-    loadDemos();
-  }, []);
+
 
   const handleSearch = async (searchQuery?: string) => {
     const term = (searchQuery ?? query).trim();
@@ -137,10 +115,7 @@ export default function CertificatePortal() {
     handleSearch();
   };
 
-  const handleDemoClick = (term: string) => {
-    setQuery(term);
-    handleSearch(term);
-  };
+
 
   const handleCopyId = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -181,11 +156,16 @@ export default function CertificatePortal() {
       {/* Header / Navbar */}
       <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-30">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-18 flex items-center justify-between">
-          <div className="flex items-center gap-3.5">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-violet-500 via-fuchsia-500 to-orange-500 p-0.5">
-              <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-                <Code2 className="w-5 h-5 text-fuchsia-400" />
-              </div>
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-xl bg-slate-900 border border-slate-800 p-1 flex items-center justify-center shrink-0">
+              <Image
+                src="/logo-white.png"
+                alt="TeamCodeLocked Logo"
+                width={32}
+                height={32}
+                className="w-full h-full object-contain"
+                priority
+              />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -318,32 +298,7 @@ export default function CertificatePortal() {
             </div>
           </form>
 
-          {/* Quick Demo Test Chips */}
-          {demoAttendees.length > 0 && (
-            <div className="mt-4 pt-3.5 border-t border-slate-800">
-              <span className="text-xs text-slate-400 block mb-2 font-medium">
-                Instant sample lookup:
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                {demoAttendees.slice(0, 5).map((d) => (
-                  <button
-                    key={d.id}
-                    type="button"
-                    onClick={() => handleDemoClick(d.email)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors"
-                  >
-                    <span>{d.name}</span>
-                    <span className="text-slate-500 font-mono text-[10px]">({d.id})</span>
-                    {d.type === "volunteer" ? (
-                      <span className="text-[9px] px-1 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/80">VOL</span>
-                    ) : (
-                      <span className="text-[9px] px-1 rounded bg-blue-950 text-blue-400 border border-blue-800/80">PAR</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+
         </div>
 
         {/* Error State */}
@@ -391,7 +346,15 @@ export default function CertificatePortal() {
                     <div className="pt-1.5">
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs font-medium">
                         <Mail className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Certificate copy emailed to {certificate.email} via Brevo</span>
+                        <span>Official certificate copy emailed to {certificate.email}</span>
+                      </span>
+                    </div>
+                  )}
+                  {certificate.emailDelivery?.alreadySent && (
+                    <div className="pt-1.5">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-950/80 border border-blue-800 text-blue-300 text-xs font-medium">
+                        <Mail className="w-3.5 h-3.5 text-blue-400" />
+                        <span>Certificate was already emailed to {certificate.email}. You can download it directly below.</span>
                       </span>
                     </div>
                   )}
@@ -655,10 +618,19 @@ export default function CertificatePortal() {
 
       {/* Footer */}
       <footer className="border-t border-slate-800 bg-slate-950 py-6 px-4 sm:px-6 text-xs text-slate-400">
-        <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
-          <p>
-            © 2026 TeamCodeLocked. All rights reserved. Built by Dhruv G Nayak &amp; Technical, Design and Marketing Team of TeamCodeLocked.
-          </p>
+        <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
+          <div className="flex items-center gap-3">
+            <Image
+              src="/logo-white.png"
+              alt="CodeLocked Logo"
+              width={24}
+              height={24}
+              className="object-contain opacity-80"
+            />
+            <p>
+              © 2026 TeamCodeLocked. All rights reserved. Built by Dhruv G Nayak &amp; Technical, Design and Marketing Team of TeamCodeLocked.
+            </p>
+          </div>
 
           <a
             href="https://bitbybit-9h8e.vercel.app"

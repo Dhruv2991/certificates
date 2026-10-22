@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { sendCertificateViaBrevo } from "@/lib/brevo";
+import {
+  hasEmailBeenSent,
+  getCertificateEmailStatus,
+  recordEmailSent,
+} from "@/lib/email-tracker";
 
 export interface CertificateRecord {
   id: string;
@@ -17,6 +22,9 @@ export interface CertificateRecord {
   college?: string;
   partner?: string;
   partnerUrl?: string;
+  emailSent?: boolean;
+  emailSentAt?: string;
+  emailCount?: number;
 }
 
 function loadCertificates(): CertificateRecord[] {
@@ -116,20 +124,36 @@ export async function GET(request: NextRequest) {
   const certType: "participant" | "volunteer" =
     match.type || (match.id.startsWith("VOL") ? "volunteer" : "participant");
 
-  // Automatically and instantly send the certificate to their email address using Brevo
-  let emailDeliveryResult: import("@/lib/brevo").BrevoEmailResult = { sent: false, skipped: true };
-  try {
-    emailDeliveryResult = await sendCertificateViaBrevo({
-      recipientName: match.name,
-      recipientEmail: match.email,
-      certificateId: match.id,
-      certificateType: certType,
-      filename: match.filename,
-      appUrl: request.nextUrl.origin,
-    });
-  } catch (emailErr: any) {
-    console.error("Brevo email send error in lookup:", emailErr);
-    emailDeliveryResult = { sent: false, error: emailErr.message || "Failed to send email" };
+  // Check if email has already been sent to this user. User can trigger only ONCE!
+  const alreadySent = hasEmailBeenSent(match.id, match.email);
+  let emailDeliveryResult: any = { sent: false, skipped: true };
+
+  if (alreadySent) {
+    const status = getCertificateEmailStatus(match.id, match.email);
+    emailDeliveryResult = {
+      sent: false,
+      alreadySent: true,
+      sentAt: status.sentAt || match.emailSentAt,
+      message: "Certificate was previously emailed to your address. Contact the club administrator if you require a resend.",
+    };
+  } else {
+    try {
+      emailDeliveryResult = await sendCertificateViaBrevo({
+        recipientName: match.name,
+        recipientEmail: match.email,
+        certificateId: match.id,
+        certificateType: certType,
+        filename: match.filename,
+        appUrl: request.nextUrl.origin,
+      });
+
+      if (emailDeliveryResult.sent) {
+        recordEmailSent(match.id, match.email, "user", emailDeliveryResult.messageId);
+      }
+    } catch (emailErr: any) {
+      console.error("Brevo email send error in lookup:", emailErr);
+      emailDeliveryResult = { sent: false, error: emailErr.message || "Failed to send email" };
+    }
   }
 
   return NextResponse.json({
@@ -179,19 +203,35 @@ export async function POST(request: NextRequest) {
     const certType: "participant" | "volunteer" =
       match.type || (match.id.startsWith("VOL") ? "volunteer" : "participant");
 
-    // Automatically send email via Brevo
-    let emailDeliveryResult: import("@/lib/brevo").BrevoEmailResult = { sent: false, skipped: true };
-    try {
-      emailDeliveryResult = await sendCertificateViaBrevo({
-        recipientName: match.name,
-        recipientEmail: match.email,
-        certificateId: match.id,
-        certificateType: certType,
-        filename: match.filename,
-        appUrl: request.nextUrl.origin,
-      });
-    } catch (emailErr: any) {
-      console.error("Brevo email send error in POST lookup:", emailErr);
+    // Check if email has already been sent
+    const alreadySent = hasEmailBeenSent(match.id, match.email);
+    let emailDeliveryResult: any = { sent: false, skipped: true };
+
+    if (alreadySent) {
+      const status = getCertificateEmailStatus(match.id, match.email);
+      emailDeliveryResult = {
+        sent: false,
+        alreadySent: true,
+        sentAt: status.sentAt || match.emailSentAt,
+        message: "Certificate was previously emailed to your address. Contact the administrator if you require a resend.",
+      };
+    } else {
+      try {
+        emailDeliveryResult = await sendCertificateViaBrevo({
+          recipientName: match.name,
+          recipientEmail: match.email,
+          certificateId: match.id,
+          certificateType: certType,
+          filename: match.filename,
+          appUrl: request.nextUrl.origin,
+        });
+
+        if (emailDeliveryResult.sent) {
+          recordEmailSent(match.id, match.email, "user", emailDeliveryResult.messageId);
+        }
+      } catch (emailErr: any) {
+        console.error("Brevo email send error in POST lookup:", emailErr);
+      }
     }
 
     return NextResponse.json({
