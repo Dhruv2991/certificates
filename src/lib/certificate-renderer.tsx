@@ -22,8 +22,8 @@ function getTemplateBase64(type: "participant" | "volunteer"): string {
   if (!isVol && participantTemplateBase64) return participantTemplateBase64;
 
   const candidateNames = isVol
-    ? ["template_volunteer.png", "Volunteer 2.png"]
-    : ["template_participant.png", "2.png"];
+    ? ["template_volunteer.png"]
+    : ["template_participant.png"];
 
   for (const name of candidateNames) {
     const candidatePath = path.join(/* turbopackIgnore: true */ process.cwd(), name);

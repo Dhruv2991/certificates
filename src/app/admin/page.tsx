@@ -579,7 +579,7 @@ export default function AdminPage() {
               <Users className="w-4 h-4 text-blue-400" />
             </div>
             <p className="text-2xl font-semibold text-zinc-100">{stats.participantsCount}</p>
-            <span className="text-[11px] text-zinc-500">Template: Participation (2.png)</span>
+            <span className="text-[11px] text-zinc-500">Template: Participation</span>
           </div>
 
           <div className="p-4 rounded-xl bg-zinc-900 border border-zinc-800">
@@ -588,7 +588,7 @@ export default function AdminPage() {
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
             </div>
             <p className="text-2xl font-semibold text-zinc-100">{stats.volunteersCount}</p>
-            <span className="text-[11px] text-zinc-500">Template: Appreciation (Volunteer 2.png)</span>
+            <span className="text-[11px] text-zinc-500">Template: Appreciation</span>
           </div>
         </div>
 

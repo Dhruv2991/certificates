@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { isValidAdminSession, checkAdminPassword, ADMIN_EMAIL } from "../auth/route";
 import {
   getAllCertificates,
@@ -12,8 +10,6 @@ import {
   deleteCertificateRecord,
 } from "@/lib/certificates-service";
 import { AppCertificateRecord } from "@/lib/supabase";
-
-const execAsync = promisify(exec);
 
 const NO_CACHE_HEADERS = {
   "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
@@ -138,17 +134,6 @@ export async function POST(request: NextRequest) {
         fs.writeFileSync(path.join(outDir, filename), pngBuf);
       } catch (nodeGenErr) {
         console.warn("Node certificate render warning:", nodeGenErr);
-      }
-
-      // Also invoke Python Pillow script if available to sync local spreadsheets
-      try {
-        const scriptPath = path.join(process.cwd(), "generate_certs.py");
-        if (fs.existsSync(/* turbopackIgnore: true */ scriptPath)) {
-          const cmd = `python "${scriptPath}" --single --name "${cleanName.replace(/"/g, '\\"')}" --email "${cleanEmail.replace(/"/g, '\\"')}" --id "${nextId}" --type "${certType}"`;
-          await execAsync(cmd);
-        }
-      } catch (genErr) {
-        console.warn("Python certificate generation warning:", genErr);
       }
     }
 

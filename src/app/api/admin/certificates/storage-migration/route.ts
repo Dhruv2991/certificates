@@ -24,10 +24,21 @@ export async function POST(request: NextRequest) {
     // Optional body
   }
 
-  const suppliedPassword = body?.password || body?.adminPassword;
+  const authHeader = request.headers.get("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+  const headerPassword = request.headers.get("x-admin-password") || bearerToken;
+
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const isServiceRoleValid =
+    serviceRoleKey &&
+    (bearerToken === serviceRoleKey ||
+      request.headers.get("apikey") === serviceRoleKey ||
+      request.headers.get("x-service-role-key") === serviceRoleKey);
+
+  const suppliedPassword = body?.password || body?.adminPassword || headerPassword;
   const isDirectPasswordValid = suppliedPassword && checkAdminPassword(suppliedPassword);
 
-  if (!isDirectPasswordValid && !isValidAdminSession(request)) {
+  if (!isServiceRoleValid && !isDirectPasswordValid && !isValidAdminSession(request)) {
     return NextResponse.json(
       { success: false, message: `Unauthorized. Admin access required (${ADMIN_EMAIL}).` },
       { status: 401, headers: NO_CACHE_HEADERS }
