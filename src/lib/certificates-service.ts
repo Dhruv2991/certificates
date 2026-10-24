@@ -18,7 +18,7 @@ export async function getAllCertificates(params?: {
   sortOrder?: "newest" | "oldest";
 }): Promise<{
   certificates: AppCertificateRecord[];
-  stats: { total: number; participantsCount: number; volunteersCount: number };
+  stats: { total: number; participantsCount: number; volunteersCount: number; missingCount?: number };
 }> {
   const supabase = getSupabaseServerClient();
 
@@ -26,7 +26,7 @@ export async function getAllCertificates(params?: {
     console.warn("[Certificates Service] Supabase client is not configured.");
     return {
       certificates: [],
-      stats: { total: 0, participantsCount: 0, volunteersCount: 0 },
+      stats: { total: 0, participantsCount: 0, volunteersCount: 0, missingCount: 0 },
     };
   }
 
@@ -69,6 +69,10 @@ export async function getAllCertificates(params?: {
       .from("certificates")
       .select("*", { count: "exact", head: true })
       .eq("type", "volunteer");
+    const { count: missingCount } = await supabase
+      .from("certificates")
+      .select("*", { count: "exact", head: true })
+      .or("certificate_url.is.null,file_url.is.null,certificate_url.eq.'',file_url.eq.'',file_url.ilike.%bitbybit%,certificate_url.ilike.%bitbybit%");
 
     return {
       certificates: mappedList,
@@ -76,13 +80,14 @@ export async function getAllCertificates(params?: {
         total: totalCount || mappedList.length,
         participantsCount: partCount || 0,
         volunteersCount: volCount || 0,
+        missingCount: missingCount || 0,
       },
     };
   } catch (err) {
     console.error("[Certificates Service] Supabase exception in getAllCertificates:", err);
     return {
       certificates: [],
-      stats: { total: 0, participantsCount: 0, volunteersCount: 0 },
+      stats: { total: 0, participantsCount: 0, volunteersCount: 0, missingCount: 0 },
     };
   }
 }
@@ -331,8 +336,8 @@ export async function recordEmailSentInDB(
 }
 
 /**
- * Identify all certificates in Supabase where the certificate image has not yet been generated
- * (i.e. certificate_url is NULL/empty, or local file in public/certificates/ does not exist).
+ * Identify all certificates in Supabase where the certificate image has not yet been generated or linked
+ * (i.e. where certificate_url or file_url is truly NULL, empty, or an unlinked placeholder).
  */
 export async function getMissingCertificates(): Promise<{
   count: number;
@@ -342,31 +347,57 @@ export async function getMissingCertificates(): Promise<{
   if (!supabase) return { count: 0, missing: [] };
 
   try {
-    const { data, error } = await supabase.from("certificates").select("*");
-    if (error || !data) {
-      console.error("[Certificates Service] Error fetching certificates for missing check:", error);
+    // 1. Direct query to Supabase: find records where certificate_url or file_url is NULL or empty
+    const { data, error } = await supabase
+      .from("certificates")
+      .select("*")
+      .or("certificate_url.is.null,file_url.is.null,certificate_url.eq.'',file_url.eq.'',file_url.ilike.%bitbybit%,certificate_url.ilike.%bitbybit%");
+
+    if (!error && data) {
+      // Validate that returned records truly have empty/null/placeholder URLs
+      const trulyMissing = (data as SupabaseCertificateRow[]).filter((r) => {
+        const certUrl = (r.certificate_url || "").trim();
+        const fileUrl = (r.file_url || "").trim();
+        return (
+          !certUrl ||
+          !fileUrl ||
+          certUrl.includes("bitbybit-9h8e.vercel.app/certificates/") ||
+          fileUrl.includes("bitbybit-9h8e.vercel.app/certificates/")
+        );
+      });
+
+      return {
+        count: trulyMissing.length,
+        missing: trulyMissing.map(mapSupabaseToApp),
+      };
+    }
+
+    if (error) {
+      console.warn("[Certificates Service] Direct missing query notice, scanning table:", error.message);
+    }
+
+    // Fallback: Fetch all rows and filter by truly NULL or empty certificate_url or file_url
+    const { data: allData, error: allErr } = await supabase.from("certificates").select("*");
+    if (allErr || !allData) {
+      console.error("[Certificates Service] Error fetching certificates for missing check:", allErr);
       return { count: 0, missing: [] };
     }
 
-    const appRecords = data.map((r) => mapSupabaseToApp(r as SupabaseCertificateRow));
-    const missing: AppCertificateRecord[] = [];
+    const missingRows = (allData as SupabaseCertificateRow[]).filter((r) => {
+      const certUrl = (r.certificate_url || "").trim();
+      const fileUrl = (r.file_url || "").trim();
+      return (
+        !certUrl ||
+        !fileUrl ||
+        certUrl.includes("bitbybit-9h8e.vercel.app/certificates/") ||
+        fileUrl.includes("bitbybit-9h8e.vercel.app/certificates/")
+      );
+    });
 
-    for (const record of appRecords) {
-      const isUrlNull = !record.certificateUrl || !record.fileUrl;
-      const primaryFile = record.filename || `${record.id}.png`;
-      const localPrimary = path.join(/* turbopackIgnore: true */ process.cwd(), "public", "certificates", primaryFile);
-      const localIdFile = path.join(/* turbopackIgnore: true */ process.cwd(), "public", "certificates", `${record.id}.png`);
-
-      const fileExists =
-        fs.existsSync(/* turbopackIgnore: true */ localPrimary) ||
-        fs.existsSync(/* turbopackIgnore: true */ localIdFile);
-
-      if (isUrlNull || !fileExists) {
-        missing.push(record);
-      }
-    }
-
-    return { count: missing.length, missing };
+    return {
+      count: missingRows.length,
+      missing: missingRows.map(mapSupabaseToApp),
+    };
   } catch (err) {
     console.error("[Certificates Service] Error in getMissingCertificates:", err);
     return { count: 0, missing: [] };
@@ -550,7 +581,7 @@ export async function batchMigrateCertificatesToStorage(options?: {
   // Fetch records from Supabase
   let query = supabase.from("certificates").select("*");
   if (options?.onlyMissing) {
-    query = query.or("certificate_url.is.null,file_url.is.null,certificate_url.eq.'',file_url.ilike.%bitbybit%");
+    query = query.or("certificate_url.is.null,file_url.is.null,certificate_url.eq.'',file_url.eq.'',file_url.ilike.%bitbybit%,certificate_url.ilike.%bitbybit%");
   }
 
   const { data, error } = await query;

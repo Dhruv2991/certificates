@@ -78,18 +78,36 @@ async function run() {
   // Identify ungenerated
   const ungenerated = [];
   for (const row of rows) {
-    const isUrlNull = !row.certificate_url || !row.file_url;
-    const targetFilename = `${row.id}.png`;
-    const localTarget = path.join(outputDir, targetFilename);
-    const altFilename = row.filename || "";
-    const localAlt = altFilename ? path.join(outputDir, altFilename) : "";
+    const certUrl = (row.certificate_url || "").trim();
+    const fileUrl = (row.file_url || "").trim();
+    const isPlaceholder =
+      certUrl.includes("bitbybit-9h8e.vercel.app/certificates/") ||
+      fileUrl.includes("bitbybit-9h8e.vercel.app/certificates/");
 
-    const hasFile = fs.existsSync(localTarget) || (localAlt && fs.existsSync(localAlt));
+    // Check if URL is truly NULL, empty, or legacy placeholder
+    const isUrlNull = !certUrl || !fileUrl || isPlaceholder;
 
-    if (isUrlNull || !hasFile) {
+    // Only for local relative paths, check whether local file exists on disk
+    const isLocalPath =
+      (fileUrl.startsWith("/") || certUrl.startsWith("/")) &&
+      !fileUrl.startsWith("//") &&
+      !certUrl.startsWith("//") &&
+      !fileUrl.startsWith("http") &&
+      !certUrl.startsWith("http");
+
+    let hasLocalFile = true;
+    if (isLocalPath) {
+      const targetFilename = `${row.id}.png`;
+      const localTarget = path.join(outputDir, targetFilename);
+      const altFilename = row.filename || "";
+      const localAlt = altFilename ? path.join(outputDir, altFilename) : "";
+      hasLocalFile = fs.existsSync(localTarget) || (Boolean(localAlt) && fs.existsSync(localAlt));
+    }
+
+    if (isUrlNull || (isLocalPath && !hasLocalFile)) {
       ungenerated.push({
         ...row,
-        targetFilename,
+        targetFilename: `${row.id}.png`,
       });
     }
   }

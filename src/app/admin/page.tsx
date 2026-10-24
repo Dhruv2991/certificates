@@ -46,6 +46,7 @@ interface Stats {
   total: number;
   participantsCount: number;
   volunteersCount: number;
+  missingCount?: number;
 }
 
 const ADMIN_EMAIL = "dhruvg.cs24@bmsce.ac.in";
@@ -138,6 +139,9 @@ export default function AdminPage() {
         setCertificates(data.certificates || []);
         if (data.stats) {
           setStats(data.stats);
+          if (typeof data.stats.missingCount === "number") {
+            setMissingCount(data.stats.missingCount);
+          }
         }
       } else if (res.status === 401) {
         setIsAuthenticated(false);
@@ -163,7 +167,9 @@ export default function AdminPage() {
       if (res.ok && data.success) {
         setBatchResult({
           type: "success",
-          text: `Batch Generation Complete: Generated & linked ${data.generatedCount} certificate(s) in Supabase!`,
+          text: data.totalMissing === 0
+            ? "All certificates are fully generated & linked in Supabase Storage! No missing records found."
+            : `Batch Generation Complete: Generated & linked ${data.generatedCount} certificate(s) in Supabase!`,
         });
         setMissingCount(data.failedCount > 0 ? data.failedCount : 0);
         fetchCertificates();
@@ -675,7 +681,7 @@ export default function AdminPage() {
               ) : (
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
               )}
-              <span>Generate Missing</span>
+              <span>Generate Missing{missingCount !== null && missingCount > 0 ? ` (${missingCount})` : ""}</span>
             </button>
           </div>
 
