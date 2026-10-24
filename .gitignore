@@ -45,3 +45,7 @@ next-env.d.ts
 
 # local runtime data
 /data/
+
+# python
+__pycache__/
+*.pyc

@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import {
   getSupabaseServerClient,
   mapSupabaseToApp,
@@ -326,4 +328,150 @@ export async function recordEmailSentInDB(
     console.error("[Certificates Service] Exception updating email status in Supabase:", err);
     return { success: false, count: 0, sentAt: now };
   }
+}
+
+/**
+ * Identify all certificates in Supabase where the certificate image has not yet been generated
+ * (i.e. certificate_url is NULL/empty, or local file in public/certificates/ does not exist).
+ */
+export async function getMissingCertificates(): Promise<{
+  count: number;
+  missing: AppCertificateRecord[];
+}> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) return { count: 0, missing: [] };
+
+  try {
+    const { data, error } = await supabase.from("certificates").select("*");
+    if (error || !data) {
+      console.error("[Certificates Service] Error fetching certificates for missing check:", error);
+      return { count: 0, missing: [] };
+    }
+
+    const appRecords = data.map((r) => mapSupabaseToApp(r as SupabaseCertificateRow));
+    const missing: AppCertificateRecord[] = [];
+
+    for (const record of appRecords) {
+      const isUrlNull = !record.certificateUrl || !record.fileUrl;
+      const primaryFile = record.filename || `${record.id}.png`;
+      const localPrimary = path.join(/* turbopackIgnore: true */ process.cwd(), "public", "certificates", primaryFile);
+      const localIdFile = path.join(/* turbopackIgnore: true */ process.cwd(), "public", "certificates", `${record.id}.png`);
+
+      const fileExists =
+        fs.existsSync(/* turbopackIgnore: true */ localPrimary) ||
+        fs.existsSync(/* turbopackIgnore: true */ localIdFile);
+
+      if (isUrlNull || !fileExists) {
+        missing.push(record);
+      }
+    }
+
+    return { count: missing.length, missing };
+  } catch (err) {
+    console.error("[Certificates Service] Error in getMissingCertificates:", err);
+    return { count: 0, missing: [] };
+  }
+}
+
+/**
+ * Generate high-resolution certificate image for a record, write to public directory,
+ * and update the Supabase row with the valid URLs and filename.
+ */
+export async function generateAndStoreCertificate(
+  record: AppCertificateRecord
+): Promise<{ success: boolean; filename: string; error?: string }> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) return { success: false, filename: "", error: "Supabase not configured." };
+
+  try {
+    const { renderCertificatePngBuffer } = await import("./certificate-renderer");
+    const certType = record.type || (record.id.startsWith("VOL") ? "volunteer" : "participant");
+
+    // Render image buffer
+    const pngBuf = await renderCertificatePngBuffer({
+      name: record.name,
+      type: certType,
+      id: record.id,
+    });
+
+    const targetFilename = `${record.id}.png`;
+    const outDir = path.join(/* turbopackIgnore: true */ process.cwd(), "public", "certificates");
+    if (!fs.existsSync(/* turbopackIgnore: true */ outDir)) {
+      fs.mkdirSync(/* turbopackIgnore: true */ outDir, { recursive: true });
+    }
+
+    // Save primary ID file
+    const targetPath = path.join(/* turbopackIgnore: true */ outDir, targetFilename);
+    fs.writeFileSync(/* turbopackIgnore: true */ targetPath, pngBuf);
+
+    // If filename was different (e.g. aadityajh.cs25.pdf), also save as .png for convenience
+    if (record.filename && record.filename !== targetFilename) {
+      const aliasName = record.filename.replace(/\.pdf$/i, ".png");
+      if (aliasName.endsWith(".png") && aliasName !== targetFilename) {
+        try {
+          fs.writeFileSync(/* turbopackIgnore: true */ path.join(outDir, aliasName), pngBuf);
+        } catch {
+          // Ignore alias write failure
+        }
+      }
+    }
+
+    const fileUrl = `/certificates/${targetFilename}`;
+
+    // Update Supabase row
+    const { error: dbError } = await supabase
+      .from("certificates")
+      .update({
+        file_url: fileUrl,
+        certificate_url: fileUrl,
+        filename: targetFilename,
+      })
+      .eq("id", record.id);
+
+    if (dbError) {
+      console.error(`[Certificates Service] Supabase update error for ${record.id}:`, dbError.message);
+      return { success: false, filename: targetFilename, error: dbError.message };
+    }
+
+    return { success: true, filename: targetFilename };
+  } catch (err: any) {
+    console.error(`[Certificates Service] Error generating certificate for ${record.id}:`, err);
+    return { success: false, filename: "", error: err?.message || "Generation error" };
+  }
+}
+
+/**
+ * Batch generate all missing certificates in one pass.
+ */
+export async function batchGenerateMissingCertificates(): Promise<{
+  totalScanned: number;
+  totalMissing: number;
+  generatedCount: number;
+  failedCount: number;
+  results: Array<{ id: string; name: string; success: boolean; error?: string }>;
+}> {
+  const { missing } = await getMissingCertificates();
+  const results: Array<{ id: string; name: string; success: boolean; error?: string }> = [];
+
+  let generatedCount = 0;
+  let failedCount = 0;
+
+  for (const record of missing) {
+    const outcome = await generateAndStoreCertificate(record);
+    if (outcome.success) {
+      generatedCount++;
+      results.push({ id: record.id, name: record.name, success: true });
+    } else {
+      failedCount++;
+      results.push({ id: record.id, name: record.name, success: false, error: outcome.error });
+    }
+  }
+
+  return {
+    totalScanned: missing.length,
+    totalMissing: missing.length,
+    generatedCount,
+    failedCount,
+    results,
+  };
 }

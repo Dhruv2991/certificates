@@ -99,8 +99,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Calculate next sequential ID from database
-    const nextId = await getNextCertificateId(certType);
+    // Check for optional custom ID (e.g. when re-issuing a deleted certificate) or calculate next sequential ID
+    const customId = body?.id ? String(body.id).trim().toUpperCase() : "";
+    const nextId = customId || (await getNextCertificateId(certType));
     const filename = `${nextId}.png`;
     const fileUrl = `/certificates/${filename}`;
 
@@ -121,8 +122,25 @@ export async function POST(request: NextRequest) {
       emailCount: 0,
     };
 
-    // Dynamically generate the certificate image via Pillow script (only in local writable environments)
+    // Dynamically render certificate image into public folder if environment is writable
     if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      try {
+        const { renderCertificatePngBuffer } = await import("@/lib/certificate-renderer");
+        const pngBuf = await renderCertificatePngBuffer({
+          name: cleanName,
+          type: certType,
+          id: nextId,
+        });
+        const outDir = path.join(process.cwd(), "public", "certificates");
+        if (!fs.existsSync(outDir)) {
+          fs.mkdirSync(outDir, { recursive: true });
+        }
+        fs.writeFileSync(path.join(outDir, filename), pngBuf);
+      } catch (nodeGenErr) {
+        console.warn("Node certificate render warning:", nodeGenErr);
+      }
+
+      // Also invoke Python Pillow script if available to sync local spreadsheets
       try {
         const scriptPath = path.join(process.cwd(), "generate_certs.py");
         if (fs.existsSync(/* turbopackIgnore: true */ scriptPath)) {
@@ -130,7 +148,7 @@ export async function POST(request: NextRequest) {
           await execAsync(cmd);
         }
       } catch (genErr) {
-        console.error("Certificate image generation warning:", genErr);
+        console.warn("Python certificate generation warning:", genErr);
       }
     }
 

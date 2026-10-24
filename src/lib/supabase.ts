@@ -117,7 +117,13 @@ export function getSupabasePublicClient(): SupabaseClient | null {
  * Convert a Supabase database row to the app's internal CertificateRecord model
  */
 export function mapSupabaseToApp(row: SupabaseCertificateRow): AppCertificateRecord {
-  const fileUrl = row.file_url || row.certificate_url || `/certificates/${row.id}.png`;
+  const isBitByBitPlaceholder = row.file_url?.includes("bitbybit-9h8e.vercel.app/certificates/");
+  const baseFilename = row.filename?.replace(/\.pdf$/i, ".png") || `${row.id}.png`;
+  const fileUrl =
+    !isBitByBitPlaceholder && (row.file_url || row.certificate_url)
+      ? (row.file_url || row.certificate_url!)
+      : `/certificates/${baseFilename}`;
+
   return {
     id: row.id,
     name: row.name,
@@ -125,7 +131,7 @@ export function mapSupabaseToApp(row: SupabaseCertificateRow): AppCertificateRec
     type: row.type || (row.id.startsWith("VOL") ? "volunteer" : "participant"),
     fileUrl: fileUrl,
     certificateUrl: row.certificate_url || fileUrl,
-    filename: row.filename || `${row.id}.png`,
+    filename: baseFilename,
     organization: row.organization || "TeamCodeLocked",
     college: row.college || "B.M.S. College of Engineering",
     event: row.event || "Club Orientation 2026",

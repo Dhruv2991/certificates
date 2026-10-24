@@ -127,6 +127,23 @@ export async function sendCertificateViaBrevo(
           }
         }
       }
+
+      // If file not found on disk (e.g. on Vercel or newly re-issued), render dynamically on the fly
+      if (!pdfBase64Content && params.recipientName) {
+        try {
+          const { renderCertificatePngBuffer } = await import("@/lib/certificate-renderer");
+          const certBuf = await renderCertificatePngBuffer({
+            name: params.recipientName,
+            type: params.certificateType,
+            id: params.certificateId,
+          });
+          if (certBuf && certBuf.length > 0) {
+            pdfBase64Content = certBuf.toString("base64");
+          }
+        } catch (dynErr) {
+          console.error("[Brevo Service] Dynamic render fallback error:", dynErr);
+        }
+      }
     }
 
     // Validate both attachment name (with .pdf) and base64 content

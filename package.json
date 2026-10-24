@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "seed:supabase": "node scripts/seed-supabase.js"
+    "seed:supabase": "node scripts/seed-supabase.js",
+    "generate:missing": "node scripts/generate-missing-certificates.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",

@@ -25,6 +25,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ArrowUpDown,
+  Sparkles,
 } from "lucide-react";
 
 interface CertificateRecord {
@@ -70,6 +71,7 @@ export default function AdminPage() {
   const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newType, setNewType] = useState<"participant" | "volunteer">("participant");
+  const [newCustomId, setNewCustomId] = useState("");
   const [addLoading, setAddLoading] = useState(false);
   const [addMessage, setAddMessage] = useState<{ type: "success" | "error"; text: string; certId?: string; fileUrl?: string } | null>(null);
 
@@ -81,6 +83,11 @@ export default function AdminPage() {
     success: boolean;
     text: string;
   } | null>(null);
+
+  // Batch Generation State for Bulk-imported / Missing Certificates
+  const [missingCount, setMissingCount] = useState<number | null>(null);
+  const [batchGenerating, setBatchGenerating] = useState(false);
+  const [batchResult, setBatchResult] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Verify session on mount
   useEffect(() => {
@@ -101,6 +108,23 @@ export default function AdminPage() {
     }
     checkAuth();
   }, []);
+
+  // Check missing certificates in Supabase
+  const checkMissingCertificates = async () => {
+    try {
+      const res = await fetch(`/api/admin/certificates/batch-generate?t=${Date.now()}`, {
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && typeof data.missingCount === "number") {
+          setMissingCount(data.missingCount);
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  };
 
   // Fetch certificates when authenticated
   const fetchCertificates = async () => {
@@ -123,11 +147,46 @@ export default function AdminPage() {
     } finally {
       setLoadingCerts(false);
     }
+    checkMissingCertificates();
+  };
+
+  // Batch generate all missing certificate records
+  const handleBatchGenerate = async () => {
+    setBatchGenerating(true);
+    setBatchResult(null);
+    try {
+      const res = await fetch("/api/admin/certificates/batch-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setBatchResult({
+          type: "success",
+          text: `Batch Generation Complete: Generated & linked ${data.generatedCount} certificate(s) in Supabase!`,
+        });
+        setMissingCount(data.failedCount > 0 ? data.failedCount : 0);
+        fetchCertificates();
+      } else {
+        setBatchResult({
+          type: "error",
+          text: data.message || "Failed to batch generate certificates.",
+        });
+      }
+    } catch {
+      setBatchResult({
+        type: "error",
+        text: "Network error occurred during batch certificate generation.",
+      });
+    } finally {
+      setBatchGenerating(false);
+    }
   };
 
   useEffect(() => {
     if (isAuthenticated) {
       fetchCertificates();
+      checkMissingCertificates();
     }
   }, [isAuthenticated]);
 
@@ -182,6 +241,7 @@ export default function AdminPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          id: newCustomId.trim().toUpperCase() || undefined,
           name: newName.trim(),
           email: newEmail.trim(),
           type: newType,
@@ -213,6 +273,7 @@ export default function AdminPage() {
 
         setNewName("");
         setNewEmail("");
+        setNewCustomId("");
         setCurrentPage(1); // Jump to page 1 where the newly added cert is
         setTypeFilter("all"); // Ensure not hidden by a different tab
         setSearchQuery(""); // Clear search to make it visible immediately
@@ -531,6 +592,65 @@ export default function AdminPage() {
           </div>
         </div>
 
+        {/* Batch Generation Alert & Action Banner */}
+        {missingCount !== null && missingCount > 0 && (
+          <div className="p-4 sm:p-5 rounded-xl bg-gradient-to-r from-amber-950/40 via-violet-950/30 to-zinc-900 border border-amber-600/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-400">
+                <Sparkles className="w-4 h-4 text-amber-400" />
+                <span>Ungenerated Certificates Detected</span>
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[11px] font-mono border border-amber-500/40">
+                  {missingCount} records
+                </span>
+              </div>
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                {missingCount} imported records in Supabase do not have their certificate images generated or linked yet. Click to render all templates in bulk.
+              </p>
+            </div>
+
+            <button
+              onClick={handleBatchGenerate}
+              disabled={batchGenerating}
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-amber-500 to-violet-600 hover:from-amber-400 hover:to-violet-500 text-zinc-950 font-bold text-xs transition-all active:scale-[0.98] disabled:opacity-50 shrink-0"
+            >
+              {batchGenerating ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Generating {missingCount} Certificates...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Generate All Missing Certificates ({missingCount})</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* Batch Result Notification */}
+        {batchResult && (
+          <div
+            className={`p-3.5 rounded-lg text-xs flex items-center justify-between gap-3 ${
+              batchResult.type === "success"
+                ? "bg-emerald-950/50 border border-emerald-700/80 text-emerald-200"
+                : "bg-red-950/50 border border-red-700/80 text-red-200"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {batchResult.type === "success" ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+              )}
+              <span>{batchResult.text}</span>
+            </div>
+            <button onClick={() => setBatchResult(null)} className="text-zinc-400 hover:text-zinc-200 text-xs px-1">
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Add Certificate Section */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 sm:p-6 space-y-4">
           <div className="flex items-center justify-between">
@@ -543,6 +663,20 @@ export default function AdminPage() {
                 Dynamically renders a new high-resolution certificate and appends it to the live database.
               </p>
             </div>
+
+            <button
+              onClick={handleBatchGenerate}
+              disabled={batchGenerating}
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 transition-colors disabled:opacity-50"
+              title="Scan and generate missing certificates"
+            >
+              {batchGenerating ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span>Generate Missing</span>
+            </button>
           </div>
 
           {addMessage && (
@@ -583,7 +717,7 @@ export default function AdminPage() {
             </div>
           )}
 
-          <form onSubmit={handleAddCertificate} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+          <form onSubmit={handleAddCertificate} className="grid grid-cols-1 sm:grid-cols-5 gap-3 items-end">
             <div className="space-y-1">
               <label className="text-xs text-zinc-400 block font-medium">Recipient Name</label>
               <input
@@ -618,6 +752,20 @@ export default function AdminPage() {
                 <option value="participant">Participant (Participation)</option>
                 <option value="volunteer">Volunteer (Appreciation)</option>
               </select>
+            </div>
+
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-zinc-400 block font-medium">Certificate ID</label>
+                <span className="text-[10px] text-zinc-500">Optional</span>
+              </div>
+              <input
+                type="text"
+                value={newCustomId}
+                onChange={(e) => setNewCustomId(e.target.value)}
+                placeholder={newType === "volunteer" ? "e.g. VOL-020" : "e.g. PAR-050"}
+                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-500 font-mono uppercase"
+              />
             </div>
 
             <button

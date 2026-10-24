@@ -43,34 +43,49 @@ export async function GET(request: NextRequest) {
   const certFileName = match?.filename || filenameParam || `${id}.png`;
   const filePath = findCertificateFile(certFileName);
 
-  if (!filePath) {
+  let fileBuffer: Buffer | null = null;
+  if (filePath) {
+    try {
+      fileBuffer = fs.readFileSync(/* turbopackIgnore: true */ filePath);
+    } catch (e) {
+      console.warn("Could not read static certificate file from disk:", e);
+    }
+  }
+
+  // If file is not on disk (e.g. on Vercel or newly re-issued), render dynamically
+  if (!fileBuffer && match) {
+    try {
+      const { renderCertificatePngBuffer } = await import("@/lib/certificate-renderer");
+      const certType = match.type || (match.id.startsWith("VOL") ? "volunteer" : "participant");
+      fileBuffer = await renderCertificatePngBuffer({
+        name: match.name,
+        type: certType,
+        id: match.id,
+      });
+    } catch (renderErr) {
+      console.error("Dynamic certificate render error on download:", renderErr);
+    }
+  }
+
+  if (!fileBuffer) {
     return NextResponse.json(
       { success: false, message: `Certificate file '${certFileName}' not found.` },
       { status: 404 }
     );
   }
 
-  try {
-    const fileBuffer = fs.readFileSync(/* turbopackIgnore: true */ filePath);
-    const recipientName = match?.name || "Participant";
-    const certId = match?.id || id || "CERT";
-    const safeName = recipientName.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const downloadFilename = `Certificate_${safeName}_${certId}.png`;
+  const recipientName = match?.name || "Participant";
+  const certId = match?.id || id || "CERT";
+  const safeName = recipientName.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const downloadFilename = `Certificate_${safeName}_${certId}.png`;
 
-    return new Response(fileBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type": "image/png",
-        "Content-Disposition": `attachment; filename="${downloadFilename}"`,
-        "Content-Length": fileBuffer.length.toString(),
-        "Cache-Control": "public, max-age=86400, stale-while-revalidate=43200",
-      },
-    });
-  } catch (err: any) {
-    console.error("Error serving certificate download:", err);
-    return NextResponse.json(
-      { success: false, message: "Failed to read certificate file." },
-      { status: 500 }
-    );
-  }
+  return new Response(new Uint8Array(fileBuffer), {
+    status: 200,
+    headers: {
+      "Content-Type": "image/png",
+      "Content-Disposition": `attachment; filename="${downloadFilename}"`,
+      "Content-Length": fileBuffer.length.toString(),
+      "Cache-Control": "public, max-age=86400, stale-while-revalidate=43200",
+    },
+  });
 }
