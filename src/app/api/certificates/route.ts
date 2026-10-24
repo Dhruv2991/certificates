@@ -8,7 +8,6 @@ import {
 import {
   getCertificateByIdOrEmail,
   getAllCertificates,
-  recordEmailSentInDB,
 } from "@/lib/certificates-service";
 
 const NO_CACHE_HEADERS = {
@@ -60,7 +59,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Lookup from Supabase PostgreSQL (with fallback to local)
+  // Lookup exclusively from Supabase PostgreSQL (public.certificates table)
   const match = await getCertificateByIdOrEmail(query);
 
   if (!match) {
@@ -76,12 +75,16 @@ export async function GET(request: NextRequest) {
   const certType: "participant" | "volunteer" =
     match.type || (match.id.startsWith("VOL") ? "volunteer" : "participant");
 
-  // Check if email has already been sent to this user. User can trigger only ONCE!
-  const alreadySent = Boolean(match.emailSent) || hasEmailBeenSent(match.id, match.email);
+  // Check if email has already been sent to this user (using Supabase columns)
+  const alreadySent =
+    Boolean(match.emailSent) ||
+    Boolean(match.emailCount && match.emailCount > 0) ||
+    (await hasEmailBeenSent(match.id, match.email));
+
   let emailDeliveryResult: any = { sent: false, skipped: true };
 
   if (alreadySent) {
-    const status = getCertificateEmailStatus(match.id, match.email);
+    const status = await getCertificateEmailStatus(match.id, match.email);
     emailDeliveryResult = {
       sent: false,
       alreadySent: true,
@@ -100,8 +103,8 @@ export async function GET(request: NextRequest) {
       });
 
       if (emailDeliveryResult.sent) {
-        recordEmailSent(match.id, match.email, "user", emailDeliveryResult.messageId);
-        await recordEmailSentInDB(match.id, match.email, "user");
+        // Record email dispatch directly into Supabase columns
+        await recordEmailSent(match.id, match.email, "user", emailDeliveryResult.messageId);
       }
     } catch (emailErr: any) {
       console.error("Brevo email send error in lookup:", emailErr);
@@ -139,6 +142,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Lookup exclusively from Supabase PostgreSQL (public.certificates table)
     const match = await getCertificateByIdOrEmail(q);
 
     if (!match) {
@@ -154,12 +158,16 @@ export async function POST(request: NextRequest) {
     const certType: "participant" | "volunteer" =
       match.type || (match.id.startsWith("VOL") ? "volunteer" : "participant");
 
-    // Check if email has already been sent
-    const alreadySent = Boolean(match.emailSent) || hasEmailBeenSent(match.id, match.email);
+    // Check if email has already been sent (using Supabase columns)
+    const alreadySent =
+      Boolean(match.emailSent) ||
+      Boolean(match.emailCount && match.emailCount > 0) ||
+      (await hasEmailBeenSent(match.id, match.email));
+
     let emailDeliveryResult: any = { sent: false, skipped: true };
 
     if (alreadySent) {
-      const status = getCertificateEmailStatus(match.id, match.email);
+      const status = await getCertificateEmailStatus(match.id, match.email);
       emailDeliveryResult = {
         sent: false,
         alreadySent: true,
@@ -178,8 +186,8 @@ export async function POST(request: NextRequest) {
         });
 
         if (emailDeliveryResult.sent) {
-          recordEmailSent(match.id, match.email, "user", emailDeliveryResult.messageId);
-          await recordEmailSentInDB(match.id, match.email, "user");
+          // Record email dispatch directly into Supabase columns
+          await recordEmailSent(match.id, match.email, "user", emailDeliveryResult.messageId);
         }
       } catch (emailErr: any) {
         console.error("Brevo email send error in POST lookup:", emailErr);

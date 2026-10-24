@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { isValidAdminSession, ADMIN_EMAIL } from "../auth/route";
+import { isValidAdminSession, checkAdminPassword, ADMIN_EMAIL } from "../auth/route";
 import {
   getAllCertificates,
   getCertificateByIdOrEmail,
@@ -53,15 +53,27 @@ export async function GET(request: NextRequest) {
 
 // POST: Add a new certificate record, render its PNG image, and persist permanently to Supabase
 export async function POST(request: NextRequest) {
-  if (!isValidAdminSession(request)) {
+  let body: any = {};
+  try {
+    body = await request.json();
+  } catch {
     return NextResponse.json(
-      { success: false, message: `Unauthorized. Admin access required (${ADMIN_EMAIL}).` },
+      { success: false, message: "Invalid JSON payload." },
+      { status: 400, headers: NO_CACHE_HEADERS }
+    );
+  }
+
+  const suppliedPassword = body?.password || body?.adminPassword;
+  const isDirectPasswordValid = suppliedPassword && checkAdminPassword(suppliedPassword);
+
+  if (!isDirectPasswordValid && !isValidAdminSession(request)) {
+    return NextResponse.json(
+      { success: false, message: `Unauthorized. Admin access required with password (${ADMIN_EMAIL}).` },
       { status: 401, headers: NO_CACHE_HEADERS }
     );
   }
 
   try {
-    const body = await request.json();
     const { name, email, type } = body;
 
     const cleanName = String(name || "").trim().replace(/[\[\]]/g, "");
@@ -109,16 +121,20 @@ export async function POST(request: NextRequest) {
       emailCount: 0,
     };
 
-    // Dynamically generate the certificate image via Pillow script
-    try {
-      const scriptPath = path.join(process.cwd(), "generate_certs.py");
-      const cmd = `python "${scriptPath}" --single --name "${cleanName.replace(/"/g, '\\"')}" --email "${cleanEmail.replace(/"/g, '\\"')}" --id "${nextId}" --type "${certType}"`;
-      await execAsync(cmd);
-    } catch (genErr) {
-      console.error("Certificate image generation warning:", genErr);
+    // Dynamically generate the certificate image via Pillow script (only in local writable environments)
+    if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      try {
+        const scriptPath = path.join(process.cwd(), "generate_certs.py");
+        if (fs.existsSync(/* turbopackIgnore: true */ scriptPath)) {
+          const cmd = `python "${scriptPath}" --single --name "${cleanName.replace(/"/g, '\\"')}" --email "${cleanEmail.replace(/"/g, '\\"')}" --id "${nextId}" --type "${certType}"`;
+          await execAsync(cmd);
+        }
+      } catch (genErr) {
+        console.error("Certificate image generation warning:", genErr);
+      }
     }
 
-    // Persist to Supabase PostgreSQL (with automatic local sync)
+    // Persist permanently to Supabase PostgreSQL
     const saveResult = await createCertificateRecord(newRecord);
 
     return NextResponse.json(
@@ -138,25 +154,29 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// DELETE: Remove a certificate record by ID from Supabase and disk
+// DELETE: Remove a certificate record by ID from Supabase
 export async function DELETE(request: NextRequest) {
-  if (!isValidAdminSession(request)) {
-    return NextResponse.json(
-      { success: false, message: `Unauthorized. Admin access required (${ADMIN_EMAIL}).` },
-      { status: 401, headers: NO_CACHE_HEADERS }
-    );
-  }
-
   const { searchParams } = new URL(request.url);
   let id = searchParams.get("id");
+  let suppliedPassword = searchParams.get("password") || searchParams.get("adminPassword");
 
-  if (!id) {
+  if (!id || !suppliedPassword) {
     try {
       const body = await request.json();
-      id = body?.id;
+      if (!id) id = body?.id;
+      if (!suppliedPassword) suppliedPassword = body?.password || body?.adminPassword;
     } catch {
       // Ignore
     }
+  }
+
+  const isDirectPasswordValid = suppliedPassword && checkAdminPassword(suppliedPassword);
+
+  if (!isDirectPasswordValid && !isValidAdminSession(request)) {
+    return NextResponse.json(
+      { success: false, message: `Unauthorized. Admin access required with password (${ADMIN_EMAIL}).` },
+      { status: 401, headers: NO_CACHE_HEADERS }
+    );
   }
 
   const cleanId = String(id || "").trim();
@@ -167,18 +187,27 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  // Delete from Supabase PostgreSQL & local registry
+  // Delete from Supabase PostgreSQL
   const deleteResult = await deleteCertificateRecord(cleanId);
 
-  // Attempt to delete physical image if present
-  try {
-    const filename = deleteResult.deletedRecord?.filename || `${cleanId}.png`;
-    const imgPath = path.join(process.cwd(), "public", "certificates", filename);
-    if (fs.existsSync(/* turbopackIgnore: true */ imgPath)) {
-      fs.unlinkSync(/* turbopackIgnore: true */ imgPath);
+  if (!deleteResult.success || !deleteResult.deletedRecord) {
+    return NextResponse.json(
+      { success: false, message: `Certificate '${cleanId}' not found in database.` },
+      { status: 404, headers: NO_CACHE_HEADERS }
+    );
+  }
+
+  // Attempt to delete physical image if present in local writable environment
+  if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    try {
+      const filename = deleteResult.deletedRecord?.filename || `${cleanId}.png`;
+      const imgPath = path.join(process.cwd(), "public", "certificates", filename);
+      if (fs.existsSync(/* turbopackIgnore: true */ imgPath)) {
+        fs.unlinkSync(/* turbopackIgnore: true */ imgPath);
+      }
+    } catch (e) {
+      console.error("Could not delete image file:", e);
     }
-  } catch (e) {
-    console.error("Could not delete image file:", e);
   }
 
   return NextResponse.json(

@@ -1,9 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isValidAdminSession, ADMIN_EMAIL } from "../auth/route";
+import { isValidAdminSession, checkAdminPassword, ADMIN_EMAIL } from "../auth/route";
 import { adminResendCertificateEmail } from "@/lib/email-tracker";
 
 export async function POST(request: NextRequest) {
-  if (!isValidAdminSession(request)) {
+  let body: any = null;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { success: false, message: "Invalid request payload." },
+      { status: 400 }
+    );
+  }
+
+  const { id, email, password, adminPassword } = body || {};
+  const suppliedPassword = password || adminPassword;
+
+  // Verify authentication via session or direct password check
+  const isDirectPasswordValid = suppliedPassword && checkAdminPassword(suppliedPassword);
+
+  if (!isDirectPasswordValid && !isValidAdminSession(request)) {
     return NextResponse.json(
       {
         success: false,
@@ -13,17 +29,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (!id) {
+    return NextResponse.json(
+      { success: false, message: "Certificate 'id' is required." },
+      { status: 400 }
+    );
+  }
+
   try {
-    const body = await request.json();
-    const { id, email } = body || {};
-
-    if (!id) {
-      return NextResponse.json(
-        { success: false, message: "Certificate 'id' is required." },
-        { status: 400 }
-      );
-    }
-
     const appUrl = request.nextUrl.origin;
     const result = await adminResendCertificateEmail(id, email, appUrl);
 
@@ -33,6 +46,7 @@ export async function POST(request: NextRequest) {
         message: result.message,
         messageId: result.messageId,
         sentAt: result.sentAt,
+        emailCount: result.emailCount,
       });
     } else {
       return NextResponse.json(

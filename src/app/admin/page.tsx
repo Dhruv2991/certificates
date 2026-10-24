@@ -282,7 +282,7 @@ export default function AdminPage() {
                   ...c,
                   emailSent: true,
                   emailSentAt: data.sentAt || new Date().toISOString(),
-                  emailCount: (c.emailCount || 0) + 1,
+                  emailCount: data.emailCount || (c.emailCount || 0) + 1,
                 }
               : c
           )
@@ -414,7 +414,6 @@ export default function AdminPage() {
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
                   <label className="font-medium text-zinc-300">Admin Password</label>
-                  <span className="text-[11px] text-zinc-500">Default: codelocked2026</span>
                 </div>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3 pointer-events-none" />

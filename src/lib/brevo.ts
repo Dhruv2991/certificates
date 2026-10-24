@@ -7,6 +7,8 @@ export interface SendCertificateEmailParams {
   certificateId: string;
   certificateType: "participant" | "volunteer";
   filename?: string;
+  pdfBase64?: string;
+  pdfContent?: string;
   appUrl?: string;
 }
 
@@ -76,21 +78,72 @@ export async function sendCertificateViaBrevo(
       }
     }
 
-    // Read certificate file from public/certificates/{id}.png to attach as base64
-    const certFileName = params.filename || `${params.certificateId}.png`;
-    const certPath = findCertificateFile(certFileName);
+    // Resolve safe recipient name for the attachment filename
+    const safeName = (params.recipientName || "Participant").replace(/[^a-zA-Z0-9_-]/g, "_");
 
-    const safeName = params.recipientName.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const attachmentFileName = `Certificate_${safeName}_${params.certificateId}.png`;
+    // Ensure the attachment filename has a valid .pdf extension
+    let attachmentFileName = "";
+    if (params.filename && params.filename.trim()) {
+      const clean = params.filename.trim();
+      attachmentFileName = clean.toLowerCase().endsWith(".pdf")
+        ? clean
+        : `${clean.replace(/\.[^/.]+$/, "")}.pdf`;
+    } else {
+      attachmentFileName = `Certificate_${safeName}_${params.certificateId || "document"}.pdf`;
+    }
 
-    let attachments: { name: string; content: string }[] = [];
+    // Resolve PDF base64 content
+    let pdfBase64Content = "";
+    const rawProvidedBase64 = (params.pdfBase64 || params.pdfContent)?.trim();
+    if (rawProvidedBase64) {
+      pdfBase64Content = rawProvidedBase64
+        .replace(/^data:application\/pdf;base64,/, "")
+        .replace(/^data:[^;]+;base64,/, "")
+        .trim();
+    } else {
+      // Look for certificate files on disk (checking PDF first, then fallback to image)
+      const baseName = params.filename
+        ? params.filename.replace(/\.[^/.]+$/, "")
+        : params.certificateId;
+      const candidates = [
+        `${baseName}.pdf`,
+        `${params.certificateId}.pdf`,
+        params.filename,
+        `${baseName}.png`,
+        `${params.certificateId}.png`,
+      ].filter(Boolean) as string[];
 
-    if (certPath) {
-      const fileBuffer = fs.readFileSync(/* turbopackIgnore: true */ certPath);
-      const base64Content = fileBuffer.toString("base64");
+      for (const candidate of candidates) {
+        const filePath = findCertificateFile(candidate);
+        if (filePath) {
+          try {
+            const fileBuffer = fs.readFileSync(/* turbopackIgnore: true */ filePath);
+            if (fileBuffer && fileBuffer.length > 0) {
+              pdfBase64Content = fileBuffer.toString("base64");
+              break;
+            }
+          } catch (err) {
+            console.error(`[Brevo Service] Error reading certificate file at ${filePath}:`, err);
+          }
+        }
+      }
+    }
+
+    // Validate both attachment name (with .pdf) and base64 content
+    const attachments: Array<{ name: string; content: string }> = [];
+    const isFilenameValid =
+      Boolean(attachmentFileName) &&
+      attachmentFileName.trim().length > 4 &&
+      attachmentFileName.toLowerCase().endsWith(".pdf");
+    const isContentValid =
+      Boolean(pdfBase64Content) &&
+      typeof pdfBase64Content === "string" &&
+      pdfBase64Content.trim().length > 0;
+
+    if (isFilenameValid && isContentValid) {
       attachments.push({
         name: attachmentFileName,
-        content: base64Content,
+        content: pdfBase64Content.trim(),
       });
     }
 
@@ -168,10 +221,10 @@ export async function sendCertificateViaBrevo(
                       Or view &amp; verify online: <a href="${onlinePortalUrl}" target="_blank" style="color: #38bdf8; font-weight: 600; text-decoration: underline;">Open in Certificate Portal</a>
                     </div>
 
-                    <!-- Attachment Notice Box -->
+                    ${attachments.length > 0 ? `<!-- Attachment Notice Box -->
                     <div style="margin-top: 20px; padding: 12px 16px; background-color: rgba(15, 23, 42, 0.8); border: 1px dashed #334155; border-radius: 8px; font-size: 12px; color: #cbd5e1; text-align: left; line-height: 1.5;">
                       📎 <strong>Direct Email Attachment:</strong> Your certificate file (<code style="color: #38bdf8; font-weight: 700;">${attachmentFileName}</code>) is also attached directly to this email so you can save or print it offline anytime.
-                    </div>
+                    </div>` : ""}
                   </td>
                 </tr>
               </table>
@@ -254,7 +307,13 @@ export async function sendCertificateViaBrevo(
 </html>
     `;
 
-    const brevoPayload = {
+    const brevoPayload: {
+      sender: { name: string; email: string };
+      to: Array<{ email: string; name: string }>;
+      subject: string;
+      htmlContent: string;
+      attachment?: Array<{ name: string; content: string }>;
+    } = {
       sender: {
         name: senderName,
         email: senderEmail,
@@ -267,8 +326,14 @@ export async function sendCertificateViaBrevo(
       ],
       subject: `Your TeamCodeLocked ${isVol ? "Volunteer Certificate of Appreciation" : "Orientation Certificate"} 🎓`,
       htmlContent: htmlBody,
-      attachment: attachments,
     };
+
+    // Requirement:
+    // 1. Only add attachment if both PDF base64 and filename are valid and present
+    // 2. Completely omit attachment key from payload if there are no attachments (never pass [] or null)
+    if (attachments.length > 0) {
+      brevoPayload.attachment = attachments;
+    }
 
     const res = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",

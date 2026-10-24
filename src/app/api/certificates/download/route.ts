@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { getCertificateByIdOrEmail } from "@/lib/certificates-service";
 
 function findCertificateFile(filename: string): string | null {
   const candidatePaths = [
@@ -18,29 +19,6 @@ function findCertificateFile(filename: string): string | null {
   return null;
 }
 
-function loadCertificates(): any[] {
-  const candidatePaths = [
-    path.join(process.cwd(), "public", "certificates.json"),
-    path.join(process.cwd(), "certificates.json"),
-    path.join(process.cwd(), "src", "data", "certificates.json"),
-  ];
-
-  for (const filePath of candidatePaths) {
-    if (fs.existsSync(/* turbopackIgnore: true */ filePath)) {
-      try {
-        const fileContent = fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf-8");
-        const parsed = JSON.parse(fileContent);
-        if (Array.isArray(parsed)) return parsed;
-      } catch (err) {
-        console.error("Error reading certificates.json in download route:", err);
-      }
-    }
-  }
-  return [];
-}
-
-import { getCertificateByIdOrEmail } from "@/lib/certificates-service";
-
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id")?.trim() || "";
@@ -54,14 +32,12 @@ export async function GET(request: NextRequest) {
   }
 
   const lookupTerm = id || filenameParam.replace(/\.png$/i, "");
-  let match = await getCertificateByIdOrEmail(lookupTerm);
-  if (!match) {
-    const certificates = loadCertificates();
-    match = certificates.find(
-      (c) =>
-        (id && c.id.toLowerCase() === id.toLowerCase()) ||
-        (filenameParam && (c.filename === filenameParam || c.id === filenameParam.replace(/\.png$/i, "")))
-    ) || null;
+  // Fetch exclusively from Supabase
+  const match = await getCertificateByIdOrEmail(lookupTerm);
+
+  // If match has a remote fileUrl, redirect directly to remote storage
+  if (match?.fileUrl && (match.fileUrl.startsWith("http://") || match.fileUrl.startsWith("https://"))) {
+    return NextResponse.redirect(match.fileUrl);
   }
 
   const certFileName = match?.filename || filenameParam || `${id}.png`;

@@ -1,6 +1,6 @@
-import fs from "fs";
-import path from "path";
 import { sendCertificateViaBrevo } from "./brevo";
+import { getSupabaseServerClient } from "./supabase";
+import { getCertificateByIdOrEmail, recordEmailSentInDB } from "./certificates-service";
 
 export interface EmailDispatchRecord {
   sentAt: string;
@@ -10,215 +10,113 @@ export interface EmailDispatchRecord {
   messageId?: string;
 }
 
-export type EmailDispatchMap = Record<string, EmailDispatchRecord>;
+/**
+ * Checks whether an email has already been dispatched for this certificate
+ * by querying the Supabase public.certificates table.
+ */
+export async function hasEmailBeenSent(certId: string, email?: string): Promise<boolean> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) return false;
 
-const DISPATCH_FILE_PATH = path.join(process.cwd(), "data", "email_dispatch.json");
+  const cleanId = certId.trim();
+  const cleanEmail = email?.trim().toLowerCase();
 
-const JSON_PATHS = [
-  path.join(process.cwd(), "public", "certificates.json"),
-  path.join(process.cwd(), "certificates.json"),
-  path.join(process.cwd(), "src", "data", "certificates.json"),
-];
-
-function readDispatchMap(): EmailDispatchMap {
   try {
-    if (fs.existsSync(/* turbopackIgnore: true */ DISPATCH_FILE_PATH)) {
-      const content = fs.readFileSync(/* turbopackIgnore: true */ DISPATCH_FILE_PATH, "utf-8");
-      return JSON.parse(content) || {};
-    }
-  } catch (err) {
-    console.error("Error reading email_dispatch.json:", err);
-  }
-  return {};
-}
+    const orCondition = cleanEmail
+      ? `id.ilike.${cleanId},email.ilike.${cleanEmail}`
+      : `id.ilike.${cleanId}`;
 
-function writeDispatchMap(map: EmailDispatchMap) {
-  try {
-    const dir = path.dirname(DISPATCH_FILE_PATH);
-    if (!fs.existsSync(/* turbopackIgnore: true */ dir)) {
-      fs.mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true });
+    const { data, error } = await supabase
+      .from("certificates")
+      .select("email_sent, email_count")
+      .or(orCondition)
+      .limit(1);
+
+    if (error || !data || data.length === 0) {
+      return false;
     }
-    fs.writeFileSync(/* turbopackIgnore: true */ DISPATCH_FILE_PATH, JSON.stringify(map, null, 2), "utf-8");
+
+    const row = data[0];
+    return Boolean(row.email_sent || (row.email_count && row.email_count > 0));
   } catch (err) {
-    console.error("Error writing email_dispatch.json:", err);
+    console.error("[Email Tracker] Error checking email dispatch in Supabase:", err);
+    return false;
   }
 }
 
 /**
- * Checks whether an email has already been dispatched for this certificate.
+ * Returns dispatch status for a certificate directly from Supabase columns:
+ * email_sent, email_sent_at, email_count, last_sent_by.
  */
-export function hasEmailBeenSent(certId: string, email?: string): boolean {
-  const map = readDispatchMap();
-  const idKey = certId.trim().toUpperCase();
-
-  if (map[idKey] && map[idKey].count > 0) {
-    return true;
-  }
-
-  // Also check if any entry has this exact email
-  if (email) {
-    const cleanEmail = email.trim().toLowerCase();
-    for (const key of Object.keys(map)) {
-      if (map[key].sentTo?.toLowerCase() === cleanEmail && map[key].count > 0) {
-        return true;
-      }
-    }
-  }
-
-  // Check fallback from certificates.json
-  for (const fp of JSON_PATHS) {
-    if (fs.existsSync(/* turbopackIgnore: true */ fp)) {
-      try {
-        const list = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ fp, "utf-8"));
-        if (Array.isArray(list)) {
-          const match = list.find(
-            (c: any) =>
-              c.id?.toUpperCase() === idKey ||
-              (email && c.email?.toLowerCase() === email.trim().toLowerCase())
-          );
-          if (match && (match.emailSent === true || match.emailCount > 0)) {
-            return true;
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  return false;
-}
-
-/**
- * Returns dispatch status for a certificate
- */
-export function getCertificateEmailStatus(certId: string, email?: string): {
+export async function getCertificateEmailStatus(certId: string, email?: string): Promise<{
   sent: boolean;
   sentAt?: string;
   count: number;
   lastSentBy?: "user" | "admin";
-} {
-  const map = readDispatchMap();
-  const idKey = certId.trim().toUpperCase();
+}> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) return { sent: false, count: 0 };
 
-  if (map[idKey]) {
-    return {
-      sent: map[idKey].count > 0,
-      sentAt: map[idKey].sentAt,
-      count: map[idKey].count,
-      lastSentBy: map[idKey].lastSentBy,
-    };
-  }
+  const cleanId = certId.trim();
+  const cleanEmail = email?.trim().toLowerCase();
 
-  if (email) {
-    const cleanEmail = email.trim().toLowerCase();
-    for (const key of Object.keys(map)) {
-      if (map[key].sentTo?.toLowerCase() === cleanEmail) {
-        return {
-          sent: map[key].count > 0,
-          sentAt: map[key].sentAt,
-          count: map[key].count,
-          lastSentBy: map[key].lastSentBy,
-        };
-      }
+  try {
+    const orCondition = cleanEmail
+      ? `id.ilike.${cleanId},email.ilike.${cleanEmail}`
+      : `id.ilike.${cleanId}`;
+
+    const { data, error } = await supabase
+      .from("certificates")
+      .select("email_sent, email_sent_at, email_count, last_sent_by")
+      .or(orCondition)
+      .limit(1);
+
+    if (error || !data || data.length === 0) {
+      return { sent: false, count: 0 };
     }
+
+    const row = data[0];
+    return {
+      sent: Boolean(row.email_sent),
+      sentAt: row.email_sent_at,
+      count: row.email_count || 0,
+      lastSentBy: row.last_sent_by as "user" | "admin" | undefined,
+    };
+  } catch (err) {
+    console.error("[Email Tracker] Error fetching email status from Supabase:", err);
+    return { sent: false, count: 0 };
   }
-
-  return { sent: false, count: 0 };
 }
-
-import { getCertificateByIdOrEmail, recordEmailSentInDB } from "./certificates-service";
 
 /**
  * Records that an email was successfully sent.
- * Updates both the dispatch map and all certificates.json files.
+ * Exclusively updates Supabase columns (email_sent, email_count, email_sent_at, last_sent_by).
+ * Completely free of local file operations (no email_dispatch.json / certificates.json writes).
  */
-export function recordEmailSent(
+export async function recordEmailSent(
   certId: string,
   email: string,
   triggeredBy: "user" | "admin",
-  messageId?: string
-) {
-  const idKey = certId.trim().toUpperCase();
-  const now = new Date().toISOString();
-
-  // Async update in Supabase
-  recordEmailSentInDB(certId, email, triggeredBy).catch((e) => {
-    console.error("Error recording email in DB:", e);
-  });
-
-  const map = readDispatchMap();
-  const existing = map[idKey] || {
-    sentAt: now,
-    sentTo: email,
-    count: 0,
-    lastSentBy: triggeredBy,
-  };
-
-  map[idKey] = {
-    sentAt: now,
-    sentTo: email,
-    count: (existing.count || 0) + 1,
-    lastSentBy: triggeredBy,
-    messageId: messageId || existing.messageId,
-  };
-
-  writeDispatchMap(map);
-
-  // Sync with certificates.json files
-  for (const fp of JSON_PATHS) {
-    if (fs.existsSync(/* turbopackIgnore: true */ fp)) {
-      try {
-        const list = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ fp, "utf-8"));
-        if (Array.isArray(list)) {
-          let updated = false;
-          for (const item of list) {
-            if (item.id?.toUpperCase() === idKey) {
-              item.emailSent = true;
-              item.emailSentAt = now;
-              item.emailCount = map[idKey].count;
-              item.lastSentBy = triggeredBy;
-              updated = true;
-              break;
-            }
-          }
-          if (updated) {
-            fs.writeFileSync(/* turbopackIgnore: true */ fp, JSON.stringify(list, null, 2), "utf-8");
-          }
-        }
-      } catch (e) {
-        console.error(`Error updating certificates in ${fp}:`, e);
-      }
-    }
+  _messageId?: string
+): Promise<void> {
+  try {
+    await recordEmailSentInDB(certId, email, triggeredBy);
+  } catch (err) {
+    console.error("[Email Tracker] Error recording email dispatch in Supabase:", err);
   }
 }
 
 /**
- * Admin action to forcefully resend certificate email
+ * Admin action to forcefully resend certificate email.
+ * Interacts exclusively with Supabase and Brevo API.
  */
 export async function adminResendCertificateEmail(
   certId: string,
   customEmail?: string,
   appUrl?: string
-): Promise<{ success: boolean; message: string; messageId?: string; sentAt?: string }> {
-  let certRecord: any = await getCertificateByIdOrEmail(certId);
-
-  if (!certRecord) {
-    for (const fp of JSON_PATHS) {
-      if (fs.existsSync(/* turbopackIgnore: true */ fp)) {
-        try {
-          const list = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ fp, "utf-8"));
-          if (Array.isArray(list)) {
-            const match = list.find((c: any) => c.id?.toUpperCase() === certId.trim().toUpperCase());
-            if (match) {
-              certRecord = match;
-              break;
-            }
-          }
-        } catch {}
-      }
-    }
-  }
+): Promise<{ success: boolean; message: string; messageId?: string; sentAt?: string; emailCount?: number }> {
+  // 1. Fetch certificate exclusively from Supabase
+  const certRecord = await getCertificateByIdOrEmail(certId);
 
   if (!certRecord) {
     return {
@@ -238,6 +136,7 @@ export async function adminResendCertificateEmail(
   const certType: "participant" | "volunteer" =
     certRecord.type || (certRecord.id?.startsWith("VOL") ? "volunteer" : "participant");
 
+  // 2. Dispatch via Brevo
   const sendResult = await sendCertificateViaBrevo({
     recipientName: certRecord.name,
     recipientEmail,
@@ -248,12 +147,14 @@ export async function adminResendCertificateEmail(
   });
 
   if (sendResult.sent) {
-    recordEmailSent(certRecord.id, recipientEmail, "admin", sendResult.messageId);
+    // 3. Record dispatch directly in Supabase
+    const dbResult = await recordEmailSentInDB(certRecord.id, recipientEmail, "admin");
     return {
       success: true,
       message: `Certificate email successfully dispatched to ${recipientEmail}.`,
       messageId: sendResult.messageId,
-      sentAt: new Date().toISOString(),
+      sentAt: dbResult.sentAt,
+      emailCount: dbResult.count,
     };
   } else {
     return {
