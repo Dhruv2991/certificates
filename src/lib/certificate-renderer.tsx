@@ -7,6 +7,9 @@ export interface RenderCertificateOptions {
   name: string;
   type: "participant" | "volunteer";
   id?: string;
+  college?: string;
+  event?: string;
+  organization?: string;
 }
 
 // In-memory cache for template Base64 strings to avoid reading disk repeatedly

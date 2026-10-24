@@ -377,67 +377,19 @@ export async function getMissingCertificates(): Promise<{
  * Generate high-resolution certificate image for a record, write to public directory,
  * and update the Supabase row with the valid URLs and filename.
  */
+/**
+ * Generates certificate and stores to Supabase Storage, updating the database record.
+ * Completely eliminates local disk writes in serverless environments to prevent EROFS errors.
+ */
 export async function generateAndStoreCertificate(
   record: AppCertificateRecord
 ): Promise<{ success: boolean; filename: string; error?: string }> {
-  const supabase = getSupabaseServerClient();
-  if (!supabase) return { success: false, filename: "", error: "Supabase not configured." };
-
-  try {
-    const { renderCertificatePngBuffer } = await import("./certificate-renderer");
-    const certType = record.type || (record.id.startsWith("VOL") ? "volunteer" : "participant");
-
-    // Render image buffer
-    const pngBuf = await renderCertificatePngBuffer({
-      name: record.name,
-      type: certType,
-      id: record.id,
-    });
-
-    const targetFilename = `${record.id}.png`;
-    const outDir = path.join(/* turbopackIgnore: true */ process.cwd(), "public", "certificates");
-    if (!fs.existsSync(/* turbopackIgnore: true */ outDir)) {
-      fs.mkdirSync(/* turbopackIgnore: true */ outDir, { recursive: true });
-    }
-
-    // Save primary ID file
-    const targetPath = path.join(/* turbopackIgnore: true */ outDir, targetFilename);
-    fs.writeFileSync(/* turbopackIgnore: true */ targetPath, pngBuf);
-
-    // If filename was different (e.g. aadityajh.cs25.pdf), also save as .png for convenience
-    if (record.filename && record.filename !== targetFilename) {
-      const aliasName = record.filename.replace(/\.pdf$/i, ".png");
-      if (aliasName.endsWith(".png") && aliasName !== targetFilename) {
-        try {
-          fs.writeFileSync(/* turbopackIgnore: true */ path.join(outDir, aliasName), pngBuf);
-        } catch {
-          // Ignore alias write failure
-        }
-      }
-    }
-
-    const fileUrl = `/certificates/${targetFilename}`;
-
-    // Update Supabase row
-    const { error: dbError } = await supabase
-      .from("certificates")
-      .update({
-        file_url: fileUrl,
-        certificate_url: fileUrl,
-        filename: targetFilename,
-      })
-      .eq("id", record.id);
-
-    if (dbError) {
-      console.error(`[Certificates Service] Supabase update error for ${record.id}:`, dbError.message);
-      return { success: false, filename: targetFilename, error: dbError.message };
-    }
-
-    return { success: true, filename: targetFilename };
-  } catch (err: any) {
-    console.error(`[Certificates Service] Error generating certificate for ${record.id}:`, err);
-    return { success: false, filename: "", error: err?.message || "Generation error" };
-  }
+  const res = await uploadCertificateToStorageAndLink(record);
+  return {
+    success: res.success,
+    filename: res.filename,
+    error: res.error,
+  };
 }
 
 /**
@@ -475,3 +427,161 @@ export async function batchGenerateMissingCertificates(): Promise<{
     results,
   };
 }
+
+/**
+ * Generates certificate buffer without writing to local disk,
+ * uploads directly to Supabase Storage ('certificates' bucket),
+ * and updates the Supabase table with the public URL and filename.
+ */
+export async function uploadCertificateToStorageAndLink(
+  record: AppCertificateRecord,
+  storageBucket: string = "certificates"
+): Promise<{ success: boolean; url: string; filename: string; error?: string }> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) return { success: false, url: "", filename: "", error: "Supabase not configured." };
+
+  try {
+    const { renderCertificatePngBuffer } = await import("./certificate-renderer");
+    const certType = record.type || (record.id.startsWith("VOL") ? "volunteer" : "participant");
+
+    // 1. Generate buffer directly in memory - zero disk writes (EROFS safe)
+    const pngBuf = await renderCertificatePngBuffer({
+      name: record.name,
+      type: certType,
+      id: record.id,
+      college: record.college,
+      event: record.event,
+      organization: record.organization,
+    });
+
+    const filename = `${record.id}.png`;
+    let publicUrl = `/certificates/${filename}`;
+
+    // 2. Upload directly to Supabase Storage bucket
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from(storageBucket)
+        .upload(filename, pngBuf, {
+          contentType: "image/png",
+          upsert: true,
+        });
+
+      if (!uploadError) {
+        const { data: urlData } = supabase.storage
+          .from(storageBucket)
+          .getPublicUrl(filename);
+        if (urlData?.publicUrl) {
+          publicUrl = urlData.publicUrl;
+        }
+      } else {
+        console.warn(`[Supabase Storage] Notice uploading ${filename}:`, uploadError.message);
+      }
+    } catch (storageErr: any) {
+      console.warn(`[Supabase Storage] Notice: ${storageErr?.message || storageErr}`);
+    }
+
+    // 3. Optional local cache only if writable and not serverless
+    if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      try {
+        const outDir = path.join(/* turbopackIgnore: true */ process.cwd(), "public", "certificates");
+        if (!fs.existsSync(/* turbopackIgnore: true */ outDir)) {
+          fs.mkdirSync(/* turbopackIgnore: true */ outDir, { recursive: true });
+        }
+        fs.writeFileSync(/* turbopackIgnore: true */ path.join(outDir, filename), pngBuf);
+      } catch {
+        // Safe to ignore in read-only environments
+      }
+    }
+
+    // 4. Update Supabase table
+    const { error: dbError } = await supabase
+      .from("certificates")
+      .update({
+        file_url: publicUrl,
+        certificate_url: publicUrl,
+        filename: filename,
+      })
+      .eq("id", record.id);
+
+    if (dbError) {
+      console.error(`[Certificates Service] Supabase DB update error for ${record.id}:`, dbError.message);
+      return { success: false, url: publicUrl, filename, error: dbError.message };
+    }
+
+    return { success: true, url: publicUrl, filename };
+  } catch (err: any) {
+    console.error(`[Certificates Service] Error in uploadCertificateToStorageAndLink for ${record.id}:`, err);
+    return { success: false, url: "", filename: "", error: err?.message || "Generation error" };
+  }
+}
+
+/**
+ * Batch migration: Queries Supabase for records (optionally filtering for unlinked / NULL certificate_url),
+ * generates buffers without local disk writes, uploads to Supabase Storage, and updates DB rows.
+ */
+export async function batchMigrateCertificatesToStorage(options?: {
+  onlyMissing?: boolean;
+  bucketName?: string;
+}): Promise<{
+  totalScanned: number;
+  processedCount: number;
+  successCount: number;
+  failedCount: number;
+  results: Array<{ id: string; name: string; url: string; success: boolean; error?: string }>;
+}> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) {
+    return { totalScanned: 0, processedCount: 0, successCount: 0, failedCount: 0, results: [] };
+  }
+
+  const bucket = options?.bucketName || "certificates";
+
+  // Ensure storage bucket exists if possible
+  try {
+    const { data: buckets } = await supabase.storage.listBuckets();
+    const hasBucket = buckets?.some((b) => b.name === bucket);
+    if (!hasBucket) {
+      await supabase.storage.createBucket(bucket, { public: true });
+    }
+  } catch (bErr) {
+    console.warn(`[Supabase Storage] Notice creating '${bucket}' bucket:`, bErr);
+  }
+
+  // Fetch records from Supabase
+  let query = supabase.from("certificates").select("*");
+  if (options?.onlyMissing) {
+    query = query.or("certificate_url.is.null,file_url.is.null,certificate_url.eq.'',file_url.ilike.%bitbybit%");
+  }
+
+  const { data, error } = await query;
+  if (error || !data) {
+    console.error("[Certificates Service] Error querying certificates for storage migration:", error);
+    return { totalScanned: 0, processedCount: 0, successCount: 0, failedCount: 0, results: [] };
+  }
+
+  const appRecords = data.map((r) => mapSupabaseToApp(r as SupabaseCertificateRow));
+  const results: Array<{ id: string; name: string; url: string; success: boolean; error?: string }> = [];
+
+  let successCount = 0;
+  let failedCount = 0;
+
+  for (const record of appRecords) {
+    const res = await uploadCertificateToStorageAndLink(record, bucket);
+    if (res.success) {
+      successCount++;
+      results.push({ id: record.id, name: record.name, url: res.url, success: true });
+    } else {
+      failedCount++;
+      results.push({ id: record.id, name: record.name, url: res.url, success: false, error: res.error });
+    }
+  }
+
+  return {
+    totalScanned: data.length,
+    processedCount: appRecords.length,
+    successCount,
+    failedCount,
+    results,
+  };
+}
+

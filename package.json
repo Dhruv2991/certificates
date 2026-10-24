@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "seed:supabase": "node scripts/seed-supabase.js",
-    "generate:missing": "node scripts/generate-missing-certificates.mjs"
+    "generate:missing": "node scripts/generate-missing-certificates.mjs",
+    "migrate:storage": "node scripts/migrate-to-supabase-storage.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",
